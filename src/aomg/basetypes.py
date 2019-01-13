@@ -24,11 +24,33 @@ class Condition:
 class GameObjectType(type):
     pass
 
-class GameObject(metaclass=GameObject):
+class GameObject(metaclass=GameObjectType):
+    parent = None
+
+    def __init__(self, parent=None):
+        self.children = []
+        if parent is not None:
+            self.parent = parent
+        # TODO: add class children
+
+    def add_child(self, child):
+        if child.parent is not None:
+            child.parent.remove_child(child) #TODO
+        child.parent = self
+        child._root = None
+        self.children.append(child)
+
+class Choice(GameObject):
     pass
 
 class World(GameObject):
-    pass
+    def __init__(self, parent=None):
+        GameObject.__init__(self, parent)
+        self.games = []
+
+    def add_game(self, child):
+        self.add_child(child)
+        self.games.append(child)
 
 class Game(GameObject):
     pass
