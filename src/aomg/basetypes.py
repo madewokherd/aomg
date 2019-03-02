@@ -82,19 +82,14 @@ class GameObjectType(object):
                     self.world_dictionary[obj, key] = value
             return
 
-        # do normal initialization
+        # no special forms, fall back to generic
         self.base_world_dictionary = None
         self.base_fork_base = None
         self.base_fork_object = None
         self.world_dictionary = {}
         self.fork_base = self
         self.fork_object = self
-
-        # no special forms, fall back to generic
-        if args:
-            raise TypeError("GameObjectType takes no positional arguments")
-        for key in kwargs:
-            setattr(self, key, kwargs[key])
+        self.__special_init__(*args, **kwargs)
 
     def __setattr__(self, name, value):
         if name in _gameobject_slots:
@@ -102,24 +97,40 @@ class GameObjectType(object):
             return
         self.world_dictionary[self.fork_object, name] = value
 
-    def __getattr__(self, name):
-        if name in _gameobject_slots:
-            object.__setattr__(self, name, value)
-            return
-        try:
-            return self.world_dictionary[self.fork_object, name]
-        except KeyError:
-            if self.base_world_dictionary:
-                try:
-                    return self.base_world_dictionary[self.base_fork_object, name]
-                except KeyError:
-                    pass
-        raise AttributeError("GameObject has no attribute %s" % repr(name))
+    def __getattribute__(self, name):
+        if name not in _gameobject_slots:
+            try:
+                return self.world_dictionary[self.fork_object, name]
+            except KeyError:
+                if self.base_world_dictionary:
+                    try:
+                        return self.base_world_dictionary[self.base_fork_object, name]
+                    except KeyError:
+                        pass
+        return object.__getattribute__(self, name)
 
     def fork(self):
+        """create a copy of this game object and all related objects"""
         return type(self)(forked_from=self)
 
+    def __special_init__(self, *args, **kwargs):
+        """subclass to handle arguments to this type or instances of it"""
+        if args:
+            raise TypeError("GameObjectType takes no positional arguments")
+        for key in kwargs:
+            setattr(self, key, kwargs[key])
+
+    def __call__(self, *args, **kwargs):
+        result = self.fork()
+        result.__special_init__(*args, **kwargs)
+        return result
+
 GameObject = GameObjectType()
+
+class ChoiceType(GameObjectType):
+    default = None
+
+Choice = ChoiceType()
 
 # TODO: move tests
 if __name__ == '__main__':
@@ -142,41 +153,15 @@ if __name__ == '__main__':
     assert obj4.sdf == 2
     assert obj4.qwe == 6
 
+    assert Choice.default == None
+    choice = Choice(default = 5)
+    assert choice.default == 5
+    choice = ChoiceType(default = 6)
+    assert choice.default == 6
+    choice = ChoiceType()
+    assert choice.default == None
+
 """first attempt
-class _GameObjectType(type):
-    parent = None
-
-    def __getattr__(self, name):
-        if name != '_base':
-            return getattr(self._base, name)
-
-    def __setattr__(self, name, value):
-        if self.frozen:
-            raise ValueError("%s is frozen" % self)
-        type.__setattr__(self, name, value)
-
-    def add_child(self, child):
-        if child.parent is not None:
-            child.parent.remove_child(child) #TODO
-        child.parent = self
-        self.children = self.children + (child,)
-
-    def __init__(self, name, bases, attrs, **kwds):
-        type.__setattr__(self, 'frozen', False)
-        self.parent = None
-        self.children = ()
-        type.__init__(self, name, bases, attrs, **kwds)
-        for attr in attrs:
-            if isinstance(attrs[attr], _GameObjectType):
-                self.add_child(attrs[attr])
-                attrs[attr].name = attr
-
-    def __iter__(self):
-        return iter(self.children)
-
-class GameObject(_GameObjectType, metaclass=_GameObjectType):
-    pass
-
 class Choice(GameObject):
     default = None
 
