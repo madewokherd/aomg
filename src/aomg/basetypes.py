@@ -54,6 +54,9 @@ _gameobject_slots = {'fork_base', 'fork_object', 'world_dictionary', 'base_fork_
 class GameObjectType(object):
     __slots__ = list(_gameobject_slots)
 
+    children = ()
+    parent = None
+
     def __init__(self, *args, **kwargs):
         # check for special forms
         if 'forked_from' in kwargs:
@@ -89,7 +92,7 @@ class GameObjectType(object):
         self.world_dictionary = {}
         self.fork_base = self
         self.fork_object = self
-        self.__special_init__(*args, **kwargs)
+        self.__ctor__(*args, **kwargs)
 
     def __setattr__(self, name, value):
         if name in _gameobject_slots:
@@ -113,8 +116,8 @@ class GameObjectType(object):
         """create a copy of this game object and all related objects"""
         return type(self)(forked_from=self)
 
-    def __special_init__(self, *args, **kwargs):
-        """subclass to handle arguments to this type or instances of it"""
+    def __ctor__(self, *args, **kwargs):
+        """override to handle arguments to this type or instances of it"""
         if args:
             raise TypeError("GameObjectType takes no positional arguments")
         for key in kwargs:
@@ -122,8 +125,16 @@ class GameObjectType(object):
 
     def __call__(self, *args, **kwargs):
         result = self.fork()
-        result.__special_init__(*args, **kwargs)
+        result.__ctor__(*args, **kwargs)
         return result
+
+    def add_child(self, child):
+        if child.parent == self:
+            return
+        if child.parent != None:
+            child.parent.remove_child(child)
+        self.children = self.children + (child,)
+        child.parent = self
 
 GameObject = GameObjectType()
 
@@ -131,6 +142,35 @@ class ChoiceType(GameObjectType):
     default = None
 
 Choice = ChoiceType()
+
+class NumericalChoiceType(ChoiceType):
+    minimum = None
+    maximum = None
+
+NumericalChoice = NumericalChoiceType()
+
+class IntegerChoiceType(NumericalChoiceType):
+    pass
+
+IntegerChoice = IntegerChoiceType()
+
+class WorldType(GameObjectType):
+    def __ctor__(self):
+        GameObjectType.__ctor__(self)
+        self.games = ()
+
+    def add_game(self, child):
+        self.add_child(child)
+        self.games = self.games + (child,)
+
+World = WorldType()
+
+class GameType(GameObjectType):
+    pass
+
+Game = GameType()
+
+
 
 # TODO: move tests
 if __name__ == '__main__':
@@ -161,36 +201,30 @@ if __name__ == '__main__':
     choice = ChoiceType()
     assert choice.default == None
 
+    world = World()
+    game1 = Game(huh = 1)
+    game2 = Game()
+    world.add_game(game1)
+    world.add_game(game2)
+    assert game1 in world.games
+    assert game2 in world.games
+    print(repr(world.games))
+    print(repr(world.world_dictionary))
+
+    world2 = world.fork()
+    print(repr(world2.games))
+    print(repr(world2.base_world_dictionary))
+    print(repr(world2.base_fork_object))
+    print(repr(world2.world_dictionary))
+    print(repr(world2.fork_object))
+    assert world2.games[0].huh == 1
+    assert world2.games[0] != game1
+    assert world2.games[0] == world2.games[0]
+    world2.games[0].huh = 2
+    assert world2.games[0].huh == 2
+    assert game1.huh == 1
+
 """first attempt
-class Choice(GameObject):
-    default = None
-
-    def __init__(self, default=None):
-        self.default = default
-
-class NumericalChoice(Choice):
-    minimum = None
-    maximum = None
-
-    def __init__(self, default=None, min=None, Max=None):
-        Choice.__init__(self, default)
-        self.minimum = min
-        self.maximum = max
-
-class IntegerChoice(NumericalChoice):
-    pass
-
-class World(GameObject):
-    def __init__(self, parent=None):
-        GameObject.__init__(self, parent)
-        self.games = []
-
-    def add_game(self, child):
-        self.add_child(child)
-        self.games.append(child)
-
-class Game(GameObject):
-    pass
 
 class MazeGame(Game):
     # TODO: Move this to another module
