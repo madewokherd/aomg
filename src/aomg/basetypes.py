@@ -24,17 +24,11 @@
 #  _GameObjectType can be subclassed
 #  subclassing a GameObject forks it
 #  GameObject.fork() also forks it
-#  all GameObject's have a fork_base, the last object in their history created by forking
-#  all GameObject's have a fork_object, which is fork_base if it was created by forking, another object if created by accessing a GameObject attribute
-#  GameObject does not have a __dict__ but has a world_dictinary
+#  GameObject.fork_object identifies the object within its universe
+#  GameObject.fork_base identifies the universe this object is in (forking creates a universe)
+#  GameObject does not have a __dict__ but has a world_dictionary
 #  world_dictionary keys are (object, name)
 #  world_dictionary values must be immutable or a GameObject
-#  accessing a GameObject attribute of a GameObject creates a new GameObject with fork_object of that object (unless it is already fork_object)
-#    the object may have a base_world_dictionary, base_fork_base, base_fork_object if we decide not to copy the world dictionary when forking
-#    an object's base_world_dictionary had best be frozen
-#    if there is a world dictionary, we must either copy it or the base world dictionary when forking
-#    when copying a dictionary, we must translate base_fork_object to the new fork_object
-#  functions are converted to "game object methods" which have knowledge of the method they replace
 #  GameObjects will typically have a name and a parent, but these are not special
 
 class Condition:
@@ -69,20 +63,66 @@ class GameObjectType(object):
                 self.base_fork_base = base.fork_base
                 self.base_fork_object = base.fork_object
                 if base.base_world_dictionary:
-                    for (obj, key), value in base.base_world_dictionary.items():
-                        if obj == base.base_fork_object:
-                            obj = self.base_fork_object
-                        base_dict[obj, key] = value
+                    for key, value in base.base_world_dictionary.items():
+                        base_dict[translate_from_base(base, key)] = translate_from_base(base, value)
                 base_dict.update(base.world_dictionary)
                 self.base_world_dictionary = FrozenDict(base_dict)
             else:
                 self.base_world_dictionary = base.base_world_dictionary
                 self.base_fork_base = base.base_fork_base
                 self.base_fork_object = base.base_fork_object
-                for (obj, key), value in base.world_dictionary.items():
-                    if obj == base:
-                        obj = self
-                    self.world_dictionary[obj, key] = value
+                for key, value in base.world_dictionary.items():
+                    self.world_dictionary[translate_from_base(self, key)] = translate_from_base(self, value)
+            return
+
+        if 'translate_base' in kwargs and 'translate_gameobject' in kwargs:
+            base = kwargs['translate_base']
+            gameobject = kwargs['translate_gameobject']
+            self.world_dictionary = gameobject.world_dictionary
+            self.fork_base = gameobject.fork_base
+            self.fork_object = base.fork_object
+            if base.fork_object == gameobject.base_fork_object:
+                # this object comes from the game's base universe, just make a stub
+                self.base_world_dictionary = gameobject.base_world_dictionary
+                self.base_fork_base = gameobject.fork_base
+                self.base_fork_object = base.fork_object
+            elif (base.fork_base, '_combined_universe') in self.world_dictionary:
+                # these objects come from different universes, but we already combined them
+                self.base_world_dictionary = gameobject.base_world_dictionary
+                self.base_fork_base = gameobject.fork_base
+                self.base_fork_object = base.fork_object
+            else:
+                # different universe, bring all its attributes into this one
+                base_dictionary = {}
+                base_dictionary.update(base.world_dictionary)
+                for (key, value) in base.base_world_dictionary.items():
+                    base_dictionary[translate_from_base(base, key)] = translate_from_base(base, value)
+
+                # set base attributes temporarily to translate the base_dictionary values
+                self.base_world_dictionary = base.world_dictionary
+                self.base_fork_base = base.fork_base
+                self.base_fork_object = base.fork_object
+                self.world_dictionary[base.fork_base, '_combined_universe'] = True
+
+                # translate base_dictionary values into world_dictionary
+                for (key, value) in base_dictionary.items():
+                    self.world_dictionary[translate_from_base(self, key)] = translate_from_base(self, value)
+
+                # set final base attributes
+                self.base_world_dictionary = gameobject.base_world_dictionary
+                self.base_fork_base = gameobject.fork_base
+                self.base_fork_object = base.fork_object
+            return
+
+        if 'translate_to_base' in kwargs:
+            # make a stub object for the base universe
+            obj = kwargs['translate_to_base']
+            self.base_world_dictionary = None
+            self.base_fork_base = None
+            self.base_fork_object = None
+            self.world_dictionary = None
+            self.fork_base = obj.base_fork_base
+            self.fork_object = obj.base_fork_object
             return
 
         # no special forms, fall back to generic
@@ -98,19 +138,35 @@ class GameObjectType(object):
         if name in _gameobject_slots:
             object.__setattr__(self, name, value)
             return
-        self.world_dictionary[self.fork_object, name] = value
+        self.world_dictionary[self, name] = value
 
     def __getattribute__(self, name):
+        try:
+            prop = getattr(type(self), name)
+            fn = prop.__get__
+        except AttributeError:
+            pass
+        else:
+            return fn(self)
         if name not in _gameobject_slots:
             try:
-                return self.world_dictionary[self.fork_object, name]
+                return self.world_dictionary[self, name]
             except KeyError:
                 if self.base_world_dictionary:
                     try:
-                        return self.base_world_dictionary[self.base_fork_object, name]
+                        key = translate_to_base(self, (self, name))
+                        return translate_from_base(self, self.base_world_dictionary[key])
                     except KeyError:
                         pass
         return object.__getattribute__(self, name)
+
+    def __hash__(self):
+        return id(self.fork_object) + id(self.fork_base)
+
+    def __eq__(self, other):
+        if isinstance(other, GameObjectType):
+            return id(self.fork_object) == id(other.fork_object) and id(self.fork_base) == id(other.fork_base)
+        return False
 
     def fork(self):
         """create a copy of this game object and all related objects"""
@@ -136,7 +192,61 @@ class GameObjectType(object):
         self.children = self.children + (child,)
         child.parent = self
 
+    def __from_base__(self, gameobject):
+        if self.fork_object == gameobject.base_fork_object:
+            return gameobject
+        return type(self)(translate_base=self, translate_gameobject=gameobject)
+
+    def __to_base__(self, gameobject):
+        if self.base_fork_object is None:
+            raise ValueError()
+        if self.fork_base == gameobject.fork_base:
+            return type(self)(translate_to_base=gameobject)
+        else:
+            raise ValueError()
+
 GameObject = GameObjectType()
+
+def translate_from_base(gameobject, baseobject):
+    """translate a key or attribute from the game object's base universe to the forked one
+
+Implement __from_base__(self, gameobject) on the type of object being translated to override.
+
+The default behavior of GameObjectType will create a new instance in the new universe.
+
+Tuples will be translated recursively.
+
+This function may be called more than once for a single object in the base universe.
+The result does not have to be identical, but it must be equal and any modifications must be shared.
+"""
+    try:
+        fn = baseobject.__from_base__
+    except AttributeError:
+        if isinstance(baseobject, tuple):
+            return tuple(translate_from_base(gameobject, x) for x in baseobject)
+        else:
+            return baseobject
+    else:
+        return fn(gameobject)
+
+def translate_to_base(gameobject, forkedobject):
+    """translate a key or attribute from the game object's universe to the base one
+
+Implement __to_base__(self, gameobject) on the type of object being translated to override.
+
+The base universe object must only be used for equality and hashing.
+
+This raises ValueError if the object did not exist in the base universe.
+"""
+    try:
+        fn = forkedobject.__to_base__
+    except AttributeError:
+        if isinstance(forkedobject, tuple):
+            return tuple(translate_to_base(gameobject, x) for x in forkedobject)
+        else:
+            return forkedobject
+    else:
+        return fn(gameobject)
 
 class ChoiceType(GameObjectType):
     default = None
@@ -208,15 +318,9 @@ if __name__ == '__main__':
     world.add_game(game2)
     assert game1 in world.games
     assert game2 in world.games
-    print(repr(world.games))
-    print(repr(world.world_dictionary))
+    assert world.games[0].huh == 1
 
     world2 = world.fork()
-    print(repr(world2.games))
-    print(repr(world2.base_world_dictionary))
-    print(repr(world2.base_fork_object))
-    print(repr(world2.world_dictionary))
-    print(repr(world2.fork_object))
     assert world2.games[0].huh == 1
     assert world2.games[0] != game1
     assert world2.games[0] == world2.games[0]
