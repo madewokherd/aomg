@@ -30,7 +30,6 @@
 
 # TODO:
 #  * Make it possible to use a dict in GameObject
-#   * Implement some sort of branchable dictionary class
 #   * implement delattr, dictionary deletion
 #   * dictionaries should be automatically converted on assignment
 #   * BranchingObject instances need a prototype to hold class attributes
@@ -50,6 +49,10 @@ class FrozenDict(dict):
     update = __setitem__
 
 _branchingobject_slots = {'fork_base', 'fork_object', 'world_dictionary', 'base_fork_base', 'base_fork_object', 'base_world_dictionary'}
+
+class _NOTHING(object):
+    "sentinal value for BranchingObject, nothing to see here"
+_NOTHING = _NOTHING()
 
 class BranchingObject(object):
     __slots__ = list(_branchingobject_slots)
@@ -159,12 +162,18 @@ class BranchingObject(object):
                 return fn(self)
         if name not in _branchingobject_slots:
             try:
-                return self.world_dictionary[self, name]
+                result = self.world_dictionary[self, name]
+                if result is _NOTHING:
+                    raise AttributeError()
+                return result
             except KeyError:
                 if self.base_world_dictionary:
                     try:
                         key = translate_to_base(self, (self, name))
-                        return translate_from_base(self, self.base_world_dictionary[key])
+                        result = translate_from_base(self, self.base_world_dictionary[key])
+                        if result is _NOTHING:
+                            raise AttributeError()
+                        return result
                     except KeyError:
                         pass
         try:
@@ -194,6 +203,13 @@ class BranchingObject(object):
             return False
         else:
             return True
+
+    def popattr(self, key):
+        result = self.getattr(key)
+        self.setattr(key, _NOTHING)
+        return result
+
+    __delattr__ = delattr = popattr
 
     def __hash__(self):
         return id(self.fork_object) + id(self.fork_base)
@@ -248,7 +264,35 @@ class BranchingOrderedDictionary(BranchingObject):
         return self.hasattr(('_valuefor', key))
 
     def __delitem__(self, key):
-        raise NotImplementedError()
+        result = self.popattr(('_valuefor', key))
+        try:
+            prev = self.popattr(('_prevfor', key))
+        except AttributeError:
+            # no previous item
+            try:
+                next = self.popattr(('_nextfor', key))
+            except AttributeError:
+                # no items left
+                assert self._count == 1
+                del self._first
+                del self._last
+            else:
+                # old first item
+                self._first = next
+                self.delattr(('_prevfor', next))
+        else:
+            # not the first item
+            try:
+                next = self.popattr(('_nextfor', key))
+            except AttributeError:
+                # old last item
+                self._last = prev
+                self.delattr(('_nextfor', prev))
+            else:
+                # middle item
+                self.setattr(('_nextfor', prev), next)
+                self.setattr(('_prevfor', next), prev)
+        self._count -= 1
 
     def __getitem__(self, key):
         try:
@@ -495,6 +539,23 @@ if __name__ == '__main__':
     assert d2[1] == 2
     d2[2] = 4
     assert list(d2.items()) == [(1, 2), (2, 4)]
+
+    d2[3] = 6
+    d2[4] = 8
+    assert list(d2.items()) == [(1, 2), (2, 4), (3, 6), (4, 8)]
+
+    del d2[2]
+    assert list(d2.items()) == [(1, 2), (3, 6), (4, 8)]
+
+    del d2[1]
+    assert list(d2.items()) == [(3, 6), (4, 8)]
+
+    del d2[4]
+    assert list(d2.items()) == [(3, 6)]
+
+    del d2[3]
+    assert list(d2.items()) == []
+    assert not d2
 
 """first attempt
 
