@@ -28,6 +28,15 @@
 #  world_dictionary keys are (object, name)
 #  world_dictionary values should be immutable or a BranchingObject, or they will be unaffected by forks
 
+# TODO:
+#  * Make it possible to use a dict in GameObject
+#   * Implement some sort of branchable dictionary class
+#   * implement delattr, dictionary deletion
+#   * dictionaries should be automatically converted on assignment
+#   * BranchingObject instances need a prototype to hold class attributes
+#  * Use a dict in GameObject for children
+#  * Make it possible to subclass a BranchingObject instance
+
 class Condition:
     pass
 
@@ -137,11 +146,17 @@ class BranchingObject(object):
     def __getattribute__(self, name):
         try:
             prop = getattr(type(self), name)
-            fn = prop.__get__
         except AttributeError:
             pass
+        except TypeError:
+            pass
         else:
-            return fn(self)
+            try:
+                fn = prop.__get__
+            except AttributeError:
+                pass
+            else:
+                return fn(self)
         if name not in _branchingobject_slots:
             try:
                 return self.world_dictionary[self, name]
@@ -152,7 +167,24 @@ class BranchingObject(object):
                         return translate_from_base(self, self.base_world_dictionary[key])
                     except KeyError:
                         pass
-        return object.__getattribute__(self, name)
+        try:
+            return object.__getattribute__(self, name)
+        except TypeError:
+            raise AttributeError()
+
+    setattr = __setattr__
+
+    getattr = __getattribute__
+
+    def hasattr(self, key):
+        try:
+            self.getattr(key)
+        except AttributeError:
+            return False
+        except TypeError:
+            return False
+        else:
+            return True
 
     def __hash__(self):
         return id(self.fork_object) + id(self.fork_base)
@@ -171,7 +203,7 @@ class BranchingObject(object):
         if args:
             raise TypeError("BranchingObject takes no positional arguments")
         for key in kwargs:
-            setattr(self, key, kwargs[key])
+            self.setattr(key, kwargs[key])
 
     def __call__(self, *args, **kwargs):
         result = self.fork()
@@ -190,6 +222,126 @@ class BranchingObject(object):
             return type(self)(translate_to_base=gameobject)
         else:
             raise ValueError()
+
+class BranchingOrderedDictionary(BranchingObject):
+    _count = 0
+
+    def __ctor__(self, *args, **kwargs):
+        for arg in args:
+            self.update(arg)
+        for k, v in kwargs.items():
+            self[k] = v
+
+    def __cmp__(self, oth):
+        raise NotImplementedError()
+
+    def __contains__(self, key):
+        return self.hasattr(('_valuefor', key))
+
+    def __delitem__(self, key):
+        raise NotImplementedError()
+
+    def __getitem__(self, key):
+        try:
+            return self.getattr(('_valuefor', key))
+        except AttributeError:
+            raise KeyError()
+
+    def __setitem__(self, key, value):
+        if self.hasattr(('_valuefor', key)):
+            self.setattr(('_valuefor', key), value)
+        else:
+            try:
+                last = self._last
+            except AttributeError:
+                self._first = key
+                self._last = key
+                self.setattr(('_valuefor', key), value)
+                self._count += 1
+            else:
+                self.setattr(('_nextfor', last), key)
+                self.setattr(('_prevfor', key), last)
+                self._last = key
+                self.setattr(('_valuefor', key), value)
+                self._count += 1
+
+    def items(self):
+        count = self._count
+        if count:
+            key = self._first
+            while True:
+                value = self.getattr(('_valuefor', key))
+                yield (key, value)
+                if self._count != count:
+                    raise RuntimeError("dictionary size changed during iteration")
+                try:
+                    key = self.getattr(('_nextfor', key))
+                except AttributeError:
+                    break
+
+    def __iter__(self):
+        return (k for (k,v) in self.items())
+
+    def __len__(self):
+        return self._count
+
+    def clear(self):
+        while self._count:
+            del self._first
+
+    def copy(self):
+        return BranchingOrderedDictonary(self)
+
+    @staticmethod
+    def fromkeys(keys, value=None):
+        result = BranchingOrderedDictionary
+        for key in keys:
+            result[key] = value
+        return result
+
+    def get(self, key, default=None):
+        return self.getattr(('_valuefor', key), default)
+
+    def has_key(self, key):
+        return self.hasattr(('_valuefor', key))
+
+    def keys(self):
+        return iter(self)
+
+    def pop(self, key):
+        result = self[key]
+        del self[key]
+        return result
+
+    def popitem(self):
+        if self._count:
+            key = self._first
+            value = self.pop(key)
+            return key, value
+        raise KeyError()
+
+    def setdefault(self, key, value=None):
+        try:
+            return self[key]
+        except KeyError:
+            self[key] = value
+            return value
+
+    def update(self, arg=None, **kwargs):
+        if arg is not None:
+            try:
+                i = arg.keys()
+            except AttributeError:
+                for key, value in arg:
+                    self[key] = value
+            else:
+                for key in keys:
+                    self[key] = arg[key]
+        for key, value in kwargs.items():
+            self[key] = value
+
+    def values(self):
+        return (v for (k,v) in self.items())
 
 class GameObjectType(BranchingObject):
     children = ()
@@ -325,6 +477,15 @@ if __name__ == '__main__':
     world2.games[0].huh = 2
     assert world2.games[0].huh == 2
     assert game1.huh == 1
+
+    d1 = BranchingOrderedDictionary()
+    assert len(d1) == 0
+    d1[1] = 2
+    assert d1[1] == 2
+    d2 = d1.fork()
+    assert d2[1] == 2
+    d2[2] = 4
+    assert list(d2.items()) == [(1, 2), (2, 4)]
 
 """first attempt
 
