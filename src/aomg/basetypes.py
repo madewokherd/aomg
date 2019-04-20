@@ -19,17 +19,14 @@
 # SOFTWARE.
 
 # object model notes
-#  all game objects are an instance of _GameObjectType
-#  _GameObjectType is not a subclass of type
-#  _GameObjectType can be subclassed
-#  subclassing a GameObject forks it
-#  GameObject.fork() also forks it
-#  GameObject.fork_object identifies the object within its universe
-#  GameObject.fork_base identifies the universe this object is in (forking creates a universe)
-#  GameObject does not have a __dict__ but has a world_dictionary
+#  all game objects are an instance of BranchingObject
+#  subclassing a BranchingObject forks it
+#  BranchingObject.fork() also forks it
+#  BranchingObject.fork_object identifies the object within its universe
+#  BranchingObject.fork_base identifies the universe this object is in (forking creates a universe)
+#  BranchingObject does not have a __dict__ but has a world_dictionary
 #  world_dictionary keys are (object, name)
-#  world_dictionary values must be immutable or a GameObject
-#  GameObjects will typically have a name and a parent, but these are not special
+#  world_dictionary values should be immutable or a BranchingObject, or they will be unaffected by forks
 
 class Condition:
     pass
@@ -43,13 +40,10 @@ class FrozenDict(dict):
     setdefault = __setitem__
     update = __setitem__
 
-_gameobject_slots = {'fork_base', 'fork_object', 'world_dictionary', 'base_fork_base', 'base_fork_object', 'base_world_dictionary'}
+_branchingobject_slots = {'fork_base', 'fork_object', 'world_dictionary', 'base_fork_base', 'base_fork_object', 'base_world_dictionary'}
 
-class GameObjectType(object):
-    __slots__ = list(_gameobject_slots)
-
-    children = ()
-    parent = None
+class BranchingObject(object):
+    __slots__ = list(_branchingobject_slots)
 
     def __init__(self, *args, **kwargs):
         # check for special forms
@@ -135,7 +129,7 @@ class GameObjectType(object):
         self.__ctor__(*args, **kwargs)
 
     def __setattr__(self, name, value):
-        if name in _gameobject_slots:
+        if name in _branchingobject_slots:
             object.__setattr__(self, name, value)
             return
         self.world_dictionary[self, name] = value
@@ -148,7 +142,7 @@ class GameObjectType(object):
             pass
         else:
             return fn(self)
-        if name not in _gameobject_slots:
+        if name not in _branchingobject_slots:
             try:
                 return self.world_dictionary[self, name]
             except KeyError:
@@ -164,7 +158,7 @@ class GameObjectType(object):
         return id(self.fork_object) + id(self.fork_base)
 
     def __eq__(self, other):
-        if isinstance(other, GameObjectType):
+        if isinstance(other, BranchingObject):
             return id(self.fork_object) == id(other.fork_object) and id(self.fork_base) == id(other.fork_base)
         return False
 
@@ -175,7 +169,7 @@ class GameObjectType(object):
     def __ctor__(self, *args, **kwargs):
         """override to handle arguments to this type or instances of it"""
         if args:
-            raise TypeError("GameObjectType takes no positional arguments")
+            raise TypeError("BranchingObject takes no positional arguments")
         for key in kwargs:
             setattr(self, key, kwargs[key])
 
@@ -183,14 +177,6 @@ class GameObjectType(object):
         result = self.fork()
         result.__ctor__(*args, **kwargs)
         return result
-
-    def add_child(self, child):
-        if child.parent == self:
-            return
-        if child.parent != None:
-            child.parent.remove_child(child)
-        self.children = self.children + (child,)
-        child.parent = self
 
     def __from_base__(self, gameobject):
         if self.fork_object == gameobject.base_fork_object:
@@ -204,6 +190,18 @@ class GameObjectType(object):
             return type(self)(translate_to_base=gameobject)
         else:
             raise ValueError()
+
+class GameObjectType(BranchingObject):
+    children = ()
+    parent = None
+
+    def add_child(self, child):
+        if child.parent == self:
+            return
+        if child.parent != None:
+            child.parent.remove_child(child)
+        self.children = self.children + (child,)
+        child.parent = self
 
 GameObject = GameObjectType()
 
