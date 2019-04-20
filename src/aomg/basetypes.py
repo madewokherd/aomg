@@ -174,7 +174,16 @@ class BranchingObject(object):
 
     setattr = __setattr__
 
-    getattr = __getattribute__
+    def getattr(self, key, *args):
+        if len(args) == 0:
+            return BranchingObject.__getattribute__(self, key)
+        elif len(args) == 1:
+            try:
+                return self.__getattribute__(key)
+            except AttributeError:
+                return args[0]
+        else:
+            raise TypeError("expected at most 2 arguments")
 
     def hasattr(self, key):
         try:
