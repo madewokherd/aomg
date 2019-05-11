@@ -62,7 +62,7 @@ def _readable_name(x):
             qualname = str(x)
     return module+qualname
 
-_branchingobject_slots = {'fork_base', 'fork_object', 'world_dictionary', 'base_fork_base', 'base_fork_object', 'base_world_dictionary'}
+_branchingobject_slots = {'fork_base', 'fork_object', 'world_dictionary', 'base_fork_base', 'base_fork_object', 'base_world_dictionary', 'alt_obj_mapping'}
 
 class _NOTHING(object):
     "sentinal value for BranchingObject, nothing to see here"
@@ -74,35 +74,77 @@ class BranchingObject(object):
     __slots__ = list(_branchingobject_slots)
 
     def __init__(self, *args, **kwargs):
+        self.alt_obj_mapping = None
+
         # check for special forms
         if 'forked_from' in kwargs:
             base = kwargs['forked_from']
             self.world_dictionary = {}
             self.fork_base = self
             self.fork_object = self
+            self.alt_obj_mapping = {}
+
+            # collect universes as fork_base values, and BranchingObject's needing remapped
+            alt_bases, alt_objs_set = base._collect_universes()
+
             if not base.base_world_dictionary or len(base.world_dictionary)**2 >= len(base.base_world_dictionary):
-                base_dict = {}
+                # make a new base_world_dictionary combining base.base_world_dictionary and base.world_dictionary
+                new_base_dictionary = True
+                self.base_world_dictionary = {}
                 self.base_fork_base = base.fork_base
                 self.base_fork_object = base.fork_object
-                if base.base_world_dictionary:
-                    for key, value in base.base_world_dictionary.items():
-                        base_dict[translate_from_base(base, key)] = translate_from_base(base, value)
-                base_dict.update(base.world_dictionary)
-                self.base_world_dictionary = FrozenDict(base_dict)
             else:
+                # make a new world_dictionary combining base.world_dictionary and other universes
+                new_base_dictionary = False
                 self.base_world_dictionary = base.base_world_dictionary
                 self.base_fork_base = base.base_fork_base
                 self.base_fork_object = base.base_fork_object
-                while True:
-                    try:
-                        # calling translate_from_base may add values to world_dictionary, that's ok
-                        count = len(base.world_dictionary)
-                        for key, value in base.world_dictionary.items():
-                            self.world_dictionary[translate_from_base(self, key)] = translate_from_base(self, value)
-                    except RuntimeError:
-                        assert len(base.world_dictionary) > count
-                    else:
-                        break
+
+            # create a clone of each alt-universe object for the new world_dictionary
+            for obj in alt_objs_set:
+                world_obj = type(obj)(internal_new=True)
+                world_obj.base_world_dictionary = self.base_world_dictionary
+                world_obj.base_fork_base = self.base_fork_base
+                world_obj.base_fork_object = obj
+                world_obj.alt_obj_mapping = None
+                world_obj.world_dictionary = self.world_dictionary
+                world_obj.fork_base = self
+                world_obj.fork_object = world_obj
+                self.alt_obj_mapping[obj] = world_obj
+
+            # map attributes from the other universes into our world_dictionary
+            for alt_base in alt_bases:
+                if alt_base.base_world_dictionary:
+                    for key, value in alt_base.base_world_dictionary.items():
+                        key = translate_from_base(alt_base, key)
+                        if key in alt_base.world_dictionary:
+                            continue
+                        key = translate_from_base(self, key)
+                        value = translate_from_base(alt_base, value)
+                        value = translate_from_base(self, value)
+                        self.world_dictionary[key] = value
+                for key, value in alt_base.world_dictionary.items():
+                    self.world_dictionary[translate_from_base(self, key)] = translate_from_base(self, value)
+
+            if new_base_dictionary:
+                if base.base_world_dictionary:
+                    for key, value in base.base_world_dictionary.items():
+                        self.base_world_dictionary[translate_from_base(base, key)] = translate_from_base(base, value)
+                self.base_world_dictionary.update(base.world_dictionary)
+                self.base_world_dictionary = FrozenDict(self.base_world_dictionary)
+            else: # new world_dictionary from base's world_dictionary values
+                # make a temporary object to translate from base's world to our world
+                temp_base = BranchingObject(internal_new=True)
+                temp_base.base_world_dictionary = base.world_dictionary
+                temp_base.base_fork_base = base.fork_base
+                temp_base.base_fork_object = base.fork_object
+                temp_base.alt_obj_mapping = self.alt_obj_mapping
+                temp_base.world_dictionary = self.world_dictionary
+                temp_base.fork_base = self.fork_base
+                temp_base.fork_object = self.fork_object
+                for key, value in base.world_dictionary.items():
+                    self.world_dictionary[translate_from_base(temp_base, key)] = translate_from_base(temp_base, value)
+
             return
 
         if 'translate_base' in kwargs and 'translate_gameobject' in kwargs:
@@ -112,39 +154,12 @@ class BranchingObject(object):
             self.world_dictionary = gameobject.world_dictionary
             self.fork_base = gameobject.fork_base
             self.fork_object = base.fork_object
-            if base.fork_object == gameobject.base_fork_object:
-                # this object comes from the game's base universe, just make a stub
-                self.base_world_dictionary = gameobject.base_world_dictionary
-                self.base_fork_base = gameobject.fork_base
-                self.base_fork_object = base.fork_object
-            elif (base.fork_base, '_combined_universe') in self.world_dictionary:
-                # these objects come from different universes, but we already combined them
-                self.base_world_dictionary = gameobject.base_world_dictionary
-                self.base_fork_base = gameobject.fork_base
-                self.base_fork_object = base.fork_object
-            else:
-                # different universe, bring all its attributes into this one
-                base_dictionary = {}
-                base_dictionary.update(base.world_dictionary)
-                if base.base_world_dictionary:
-                    for (key, value) in list(base.base_world_dictionary.items()):
-                        base_dictionary[translate_from_base(base, key)] = translate_from_base(base, value)
-
-                # set base attributes temporarily to translate the base_dictionary values
-                self.base_world_dictionary = base.world_dictionary
-                self.base_fork_base = base.fork_base
-                self.base_fork_object = base.fork_object
-                self.world_dictionary[base.fork_base, '_combined_universe'] = True
-
-                # translate base_dictionary values into world_dictionary
-                for (key, value) in base_dictionary.items():
-                    self.world_dictionary[translate_from_base(self, key)] = translate_from_base(self, value)
-
-                # set final base attributes
-                self.base_world_dictionary = gameobject.base_world_dictionary
-                self.base_fork_base = gameobject.fork_base
-                self.base_fork_object = base.fork_object
-            return
+            if base.fork_object is not gameobject.base_fork_object:
+                # value is external to base universe
+                raise ValueError()
+            self.base_world_dictionary = gameobject.base_world_dictionary
+            self.base_fork_base = gameobject.fork_base
+            self.base_fork_object = base.fork_object
 
         if 'translate_to_base' in kwargs:
             # make a stub object for the base universe
@@ -157,6 +172,9 @@ class BranchingObject(object):
             self.fork_object = obj.base_fork_object
             return
 
+        if 'internal_new' in kwargs:
+            return
+
         # no special forms, fall back to generic
         self.base_world_dictionary = None
         self.base_fork_base = None
@@ -165,6 +183,47 @@ class BranchingObject(object):
         self.fork_base = self
         self.fork_object = self
         self.__ctor__(*args, **kwargs)
+
+    def __collect_universes__(self):
+        "find any objects that might be part of a different universe"
+        if self.fork_base is not self.fork_object:
+            yield self.fork_base
+            return
+        for key, value in self.world_dictionary.items():
+            yield key
+            yield value
+
+    def _collect_universes(self):
+        "find all related universes to this one"
+        bases_stack = []
+        iters_stack = []
+        seen = {self.fork_base}
+        objs = set()
+        bases_stack.append(self.fork_base)
+        iters_stack.append(self.fork_base.__collect_universes__())
+        while bases_stack:
+            base = bases_stack[-1]
+            it = iters_stack[-1]
+            try:
+                n = it.__next__()
+            except StopIteration:
+                bases_stack.pop(-1)
+                iters_stack.pop(-1)
+            else:
+                if n in seen or n in bases_stack:
+                    continue
+                if isinstance(n, BranchingObject):
+                    if n.fork_base is not self.fork_base:
+                        objs.add(n)
+                    if n.fork_base not in seen:
+                        seen.add(n.fork_base)
+                        bases_stack.append(n.fork_base)
+                        iters_stack.append(n.fork_base.__collect_universes__())
+                else:
+                    bases_stack.append(n)
+                    iters_stack.append(_collect_universes(n))
+        seen.remove(self.fork_base)
+        return seen, objs
 
     def __setattr__(self, name, value):
         if name in _branchingobject_slots:
@@ -283,6 +342,8 @@ class BranchingObject(object):
             return gameobject.fork_base
         if self.fork_object == gameobject.base_fork_object:
             return gameobject
+        if self in gameobject.alt_obj_mapping:
+            return gameobject.alt_obj_mapping[self]
         return type(self)(translate_base=self, translate_gameobject=gameobject)
 
     def __to_base__(self, gameobject):
@@ -292,6 +353,59 @@ class BranchingObject(object):
             return type(self)(translate_to_base=gameobject)
         else:
             raise ValueError()
+
+def translate_from_base(gameobject, baseobject):
+    """translate a key or attribute from the game object's base universe to the forked one
+
+Implement __from_base__(self, gameobject) on the type of object being translated to override.
+
+The default behavior of GameObjectType will create a new instance in the new universe.
+
+Tuples will be translated recursively.
+
+This function may be called more than once for a single object in the base universe.
+The result does not have to be identical, but it must be equal and any modifications must be shared.
+
+This raises ValueError if the object was external to the base universe
+"""
+    try:
+        fn = baseobject.__from_base__
+    except AttributeError:
+        if isinstance(baseobject, tuple):
+            return tuple(translate_from_base(gameobject, x) for x in baseobject)
+        else:
+            return baseobject
+    else:
+        return fn(gameobject)
+
+def translate_to_base(gameobject, forkedobject):
+    """translate a key or attribute from the game object's universe to the base one
+
+Implement __to_base__(self, gameobject) on the type of object being translated to override.
+
+The base universe object must only be used for equality and hashing.
+
+This raises ValueError if the object did not exist in the base universe.
+"""
+    try:
+        fn = forkedobject.__to_base__
+    except AttributeError:
+        if isinstance(forkedobject, tuple):
+            return tuple(translate_to_base(gameobject, x) for x in forkedobject)
+        else:
+            return forkedobject
+    else:
+        return fn(gameobject)
+
+def _collect_universes(obj):
+    if isinstance(obj, tuple):
+        return iter(obj)
+    try:
+        fn = obj.__collect_universes__
+    except AttributeError:
+        return iter(())
+    else:
+        return fn()
 
 def to_branching_object(obj):
     try:
@@ -519,47 +633,6 @@ class GameObjectType(BranchingObject):
 
 GameObject = GameObjectType()
 
-def translate_from_base(gameobject, baseobject):
-    """translate a key or attribute from the game object's base universe to the forked one
-
-Implement __from_base__(self, gameobject) on the type of object being translated to override.
-
-The default behavior of GameObjectType will create a new instance in the new universe.
-
-Tuples will be translated recursively.
-
-This function may be called more than once for a single object in the base universe.
-The result does not have to be identical, but it must be equal and any modifications must be shared.
-"""
-    try:
-        fn = baseobject.__from_base__
-    except AttributeError:
-        if isinstance(baseobject, tuple):
-            return tuple(translate_from_base(gameobject, x) for x in baseobject)
-        else:
-            return baseobject
-    else:
-        return fn(gameobject)
-
-def translate_to_base(gameobject, forkedobject):
-    """translate a key or attribute from the game object's universe to the base one
-
-Implement __to_base__(self, gameobject) on the type of object being translated to override.
-
-The base universe object must only be used for equality and hashing.
-
-This raises ValueError if the object did not exist in the base universe.
-"""
-    try:
-        fn = forkedobject.__to_base__
-    except AttributeError:
-        if isinstance(forkedobject, tuple):
-            return tuple(translate_to_base(gameobject, x) for x in forkedobject)
-        else:
-            return forkedobject
-    else:
-        return fn(gameobject)
-
 class ChoiceType(GameObjectType):
     default = None
 
@@ -634,13 +707,7 @@ if __name__ == '__main__':
     assert game2 in world.games.values()
     assert world.games['Game'].huh == 1
 
-    print(world, hex(id(world.base_fork_base)), hex(id(world.base_fork_object)))
-    print(world.base_world_dictionary)
-    print(world.world_dictionary)
     world2 = world.fork()
-    print(world2, hex(id(world2.base_fork_base)), hex(id(world2.base_fork_object)))
-    print(world2.base_world_dictionary)
-    print(world2.world_dictionary)
     assert world2.games['Game'].huh == 1
     assert world2.games['Game'] != game1
     assert world2.games['Game'] == world2.games['Game']
