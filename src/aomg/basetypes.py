@@ -650,9 +650,9 @@ class IntegerChoiceType(NumericalChoiceType):
 IntegerChoice = IntegerChoiceType()
 
 class WorldType(GameObjectType):
-    def __ctor__(self):
-        GameObjectType.__ctor__(self)
+    def __ctor__(self, *args, **kwargs):
         self.games = {}
+        GameObjectType.__ctor__(self, *args, **kwargs)
 
     def add_game(self, child):
         self.add_child(child)
@@ -665,7 +665,19 @@ class GameType(GameObjectType):
 
 Game = GameType()
 
+class GridMapType(GameObjectType):
+    def __ctor__(self, *args, **kwargs):
+        self.Width = IntegerChoice(minimum=1, default=10)
+        self.Height = IntegerChoice(minimum=1, default=10)
+        GameObjectType.__ctor__(self, *args, **kwargs)
 
+GridMap = GridMapType()
+
+# TODO: move this
+class MazeGame(GameType):
+    def __ctor__(self, *args, **kwargs):
+        self.map = GridMap()
+        GameType.__ctor__(self, *args, **kwargs)
 
 # TODO: move tests
 if __name__ == '__main__':
@@ -741,25 +753,7 @@ if __name__ == '__main__':
     assert list(d2.items()) == []
     assert not d2
 
-"""first attempt
-
-class MazeGame(Game):
-    # TODO: Move this to another module
-    Width = IntegerChoice(min=1, default=10)
-    Height = IntegerChoice(min=1, default=10)
-
-# TODO: Move this
-if __name__ == '__main__':
-    def print_tree(x, depth=0):
-        print("%s%s" % (' '*depth, x.name))
-        for child in x:
-            print_tree(child, depth+1)
-
-    print_tree(World)
-    print_tree(MazeGame)
-
+    # MazeGame tests
     world = World()
     maze = MazeGame()
     world.add_game(maze)
-    print_tree(world)
-"""
