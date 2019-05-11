@@ -30,7 +30,6 @@
 
 # TODO:
 #  * Make it possible to use a dict in GameObject
-#   * implement delattr, dictionary deletion
 #   * dictionaries should be automatically converted on assignment
 #   * BranchingObject instances need a prototype to hold class attributes
 #  * Use a dict in GameObject for children
@@ -48,11 +47,28 @@ class FrozenDict(dict):
     setdefault = __setitem__
     update = __setitem__
 
+def _readable_name(x):
+    module = ''
+    try:
+        module = x.__module__ + '.'
+    except AttributeError:
+        pass
+    try:
+        qualname = x.__qualname__
+    except AttributeError:
+        try:
+            qualname = x.__name__
+        except AttributeError:
+            qualname = str(x)
+    return module+qualname
+
 _branchingobject_slots = {'fork_base', 'fork_object', 'world_dictionary', 'base_fork_base', 'base_fork_object', 'base_world_dictionary'}
 
 class _NOTHING(object):
     "sentinal value for BranchingObject, nothing to see here"
 _NOTHING = _NOTHING()
+
+standard_branching_types = {}
 
 class BranchingObject(object):
     __slots__ = list(_branchingobject_slots)
@@ -77,11 +93,20 @@ class BranchingObject(object):
                 self.base_world_dictionary = base.base_world_dictionary
                 self.base_fork_base = base.base_fork_base
                 self.base_fork_object = base.base_fork_object
-                for key, value in base.world_dictionary.items():
-                    self.world_dictionary[translate_from_base(self, key)] = translate_from_base(self, value)
+                while True:
+                    try:
+                        # calling translate_from_base may add values to world_dictionary, that's ok
+                        count = len(base.world_dictionary)
+                        for key, value in base.world_dictionary.items():
+                            self.world_dictionary[translate_from_base(self, key)] = translate_from_base(self, value)
+                    except RuntimeError:
+                        assert len(base.world_dictionary) > count
+                    else:
+                        break
             return
 
         if 'translate_base' in kwargs and 'translate_gameobject' in kwargs:
+            # translate from base universe to current
             base = kwargs['translate_base']
             gameobject = kwargs['translate_gameobject']
             self.world_dictionary = gameobject.world_dictionary
@@ -101,8 +126,9 @@ class BranchingObject(object):
                 # different universe, bring all its attributes into this one
                 base_dictionary = {}
                 base_dictionary.update(base.world_dictionary)
-                for (key, value) in base.base_world_dictionary.items():
-                    base_dictionary[translate_from_base(base, key)] = translate_from_base(base, value)
+                if base.base_world_dictionary:
+                    for (key, value) in list(base.base_world_dictionary.items()):
+                        base_dictionary[translate_from_base(base, key)] = translate_from_base(base, value)
 
                 # set base attributes temporarily to translate the base_dictionary values
                 self.base_world_dictionary = base.world_dictionary
@@ -144,6 +170,20 @@ class BranchingObject(object):
         if name in _branchingobject_slots:
             object.__setattr__(self, name, value)
             return
+        try:
+            prop = getattr(type(self), name)
+        except AttributeError:
+            pass
+        except TypeError:
+            pass
+        else:
+            try:
+                fn = prop.__set__
+            except AttributeError:
+                pass
+            else:
+                return fn(self, value)
+        value = to_branching_object(value)
         self.world_dictionary[self, name] = value
 
     def __getattribute__(self, name):
@@ -219,6 +259,9 @@ class BranchingObject(object):
             return id(self.fork_object) == id(other.fork_object) and id(self.fork_base) == id(other.fork_base)
         return False
 
+    def __repr__(self):
+        return "<{} object base={:#x} obj={:#x}>".format(_readable_name(type(self)), id(self.fork_base), id(self.fork_object))
+
     def fork(self):
         """create a copy of this game object and all related objects"""
         return type(self)(forked_from=self)
@@ -236,6 +279,8 @@ class BranchingObject(object):
         return result
 
     def __from_base__(self, gameobject):
+        if self.fork_object == gameobject.base_fork_base:
+            return gameobject.fork_base
         if self.fork_object == gameobject.base_fork_object:
             return gameobject
         return type(self)(translate_base=self, translate_gameobject=gameobject)
@@ -247,6 +292,33 @@ class BranchingObject(object):
             return type(self)(translate_to_base=gameobject)
         else:
             raise ValueError()
+
+def to_branching_object(obj):
+    try:
+        m = obj.__to_branching_object__
+    except AttributeError:
+        try:
+            f = standard_branching_types[type(obj)]
+        except KeyError:
+            return obj
+        else:
+            return f(obj)
+    else:
+        return m()
+
+def _tuple_to_branching(t):
+    result = []
+    modified = False
+    for item in t:
+        new_item = to_branching_object(item)
+        result.append(new_item)
+        if new_item is not item:
+            modified = True
+    if modified:
+        return tuple(result)
+    else:
+        return t
+standard_branching_types[tuple] = _tuple_to_branching
 
 class BranchingOrderedDictionary(BranchingObject):
     _count = 0
@@ -383,7 +455,7 @@ class BranchingOrderedDictionary(BranchingObject):
     def update(self, arg=None, **kwargs):
         if arg is not None:
             try:
-                i = arg.keys()
+                keys = arg.keys()
             except AttributeError:
                 for key, value in arg:
                     self[key] = value
@@ -396,16 +468,53 @@ class BranchingOrderedDictionary(BranchingObject):
     def values(self):
         return (v for (k,v) in self.items())
 
-class GameObjectType(BranchingObject):
-    children = ()
-    parent = None
+def _to_branching_dictionary(d):
+    result = BranchingOrderedDictionary(d)
+    d.clear()
+    d[None] = "This dictionary was used with a BranchingObject and automatically converted to a BranchingOrderedDictionary. If you want this object to be branched with others, you should create a BranchingOrderedDictionary. If not, use some other non-branching type."
+    return result
 
-    def add_child(self, child):
+standard_branching_types[dict] = _to_branching_dictionary
+
+class GameObjectType(BranchingObject):
+    parent = None
+    _name = None
+
+    def __ctor__(self, *args, **kwargs):
+        self.children = {}
+        BranchingObject.__ctor__(self, *args, **kwargs)
+
+    def _get_name(self):
+        if self._name is None:
+            result = type(self).__name__
+            if result.endswith('Type'):
+                result = result[:-4]
+            self._name = result
+        return self._name
+
+    def _set_name(self, name):
+        if self.parent is not None:
+            raise TypeError("name cannot be changed while a parent exists")
+        self._name = name
+
+    name = property(_get_name, _set_name)
+
+    def add_child(self, child, name=None):
+        if not isinstance(child, GameObjectType):
+            raise TypeError("child must be an instance of GameObjectType")
         if child.parent == self:
             return
-        if child.parent != None:
+        if child.parent is not None:
             child.parent.remove_child(child)
-        self.children = self.children + (child,)
+        if name is None:
+            name = child.name
+        if name in self.children:
+            i = 2
+            while name + str(i) in self.children:
+                i += 1
+            name = name + str(i)
+        child.name = name
+        self.children[name] = child
         child.parent = self
 
 GameObject = GameObjectType()
@@ -470,11 +579,11 @@ IntegerChoice = IntegerChoiceType()
 class WorldType(GameObjectType):
     def __ctor__(self):
         GameObjectType.__ctor__(self)
-        self.games = ()
+        self.games = {}
 
     def add_game(self, child):
         self.add_child(child)
-        self.games = self.games + (child,)
+        self.games[child.name] = child
 
 World = WorldType()
 
@@ -519,16 +628,24 @@ if __name__ == '__main__':
     game2 = Game()
     world.add_game(game1)
     world.add_game(game2)
-    assert game1 in world.games
-    assert game2 in world.games
-    assert world.games[0].huh == 1
+    assert game1.name == 'Game'
+    assert game2.name == 'Game2'
+    assert game1 in world.games.values()
+    assert game2 in world.games.values()
+    assert world.games['Game'].huh == 1
 
+    print(world, hex(id(world.base_fork_base)), hex(id(world.base_fork_object)))
+    print(world.base_world_dictionary)
+    print(world.world_dictionary)
     world2 = world.fork()
-    assert world2.games[0].huh == 1
-    assert world2.games[0] != game1
-    assert world2.games[0] == world2.games[0]
-    world2.games[0].huh = 2
-    assert world2.games[0].huh == 2
+    print(world2, hex(id(world2.base_fork_base)), hex(id(world2.base_fork_object)))
+    print(world2.base_world_dictionary)
+    print(world2.world_dictionary)
+    assert world2.games['Game'].huh == 1
+    assert world2.games['Game'] != game1
+    assert world2.games['Game'] == world2.games['Game']
+    world2.games['Game'].huh = 2
+    assert world2.games['Game'].huh == 2
     assert game1.huh == 1
 
     d1 = BranchingOrderedDictionary()
