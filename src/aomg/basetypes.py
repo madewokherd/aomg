@@ -243,7 +243,11 @@ class BranchingObject(object):
             else:
                 return fn(self, value)
         value = to_branching_object(value)
+        self.__setattr_hook__(name, value)
         self.world_dictionary[self, name] = value
+
+    def __setattr_hook__(self, name, value):
+        pass
 
     def __getattribute__(self, name):
         try:
@@ -631,6 +635,16 @@ class GameObjectType(BranchingObject):
         self.children[name] = child
         child.parent = self
 
+    def __setattr_hook__(self, name, value):
+        BranchingObject.__setattr_hook__(self, name, value)
+        if isinstance(value, GameObjectType) and name != 'parent' and value.parent is None:
+            self.add_child(value, str(name))
+
+    def debug_print(self, indent=0):
+        print(' '*indent+self.name, self)
+        for child in self.children.values():
+            child.debug_print(indent+2)
+
 GameObject = GameObjectType()
 
 class ChoiceType(GameObjectType):
@@ -651,8 +665,8 @@ IntegerChoice = IntegerChoiceType()
 
 class WorldType(GameObjectType):
     def __ctor__(self, *args, **kwargs):
-        self.games = {}
         GameObjectType.__ctor__(self, *args, **kwargs)
+        self.games = {}
 
     def add_game(self, child):
         self.add_child(child)
@@ -667,17 +681,20 @@ Game = GameType()
 
 class GridMapType(GameObjectType):
     def __ctor__(self, *args, **kwargs):
+        GameObjectType.__ctor__(self, *args, **kwargs)
         self.Width = IntegerChoice(minimum=1, default=10)
         self.Height = IntegerChoice(minimum=1, default=10)
-        GameObjectType.__ctor__(self, *args, **kwargs)
+
+    # TODO: cells
+    # TODO: links
 
 GridMap = GridMapType()
 
 # TODO: move this
 class MazeGame(GameType):
     def __ctor__(self, *args, **kwargs):
-        self.map = GridMap()
         GameType.__ctor__(self, *args, **kwargs)
+        self.map = GridMap()
 
 # TODO: move tests
 if __name__ == '__main__':
@@ -757,3 +774,4 @@ if __name__ == '__main__':
     world = World()
     maze = MazeGame()
     world.add_game(maze)
+    world.debug_print()
