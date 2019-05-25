@@ -243,10 +243,10 @@ class BranchingObject(object):
             else:
                 return fn(self, value)
         value = to_branching_object(value)
-        self.__setattr_hook__(name, value)
+        self.__setattr_hook__(name, value, value is _NOTHING)
         self.world_dictionary[self, name] = value
 
-    def __setattr_hook__(self, name, value):
+    def __setattr_hook__(self, name, value, delete=False):
         pass
 
     def __getattribute__(self, name):
@@ -635,10 +635,26 @@ class GameObjectType(BranchingObject):
         self.children[name] = child
         child.parent = self
 
-    def __setattr_hook__(self, name, value):
-        BranchingObject.__setattr_hook__(self, name, value)
-        if isinstance(value, GameObjectType) and name != 'parent' and value.parent is None:
+    def remove_child(self, child):
+        if not isinstance(child, GameObjectType):
+            raise TypeError("child must be an instance of GameObjectType")
+        if child.parent != self:
+            raise ValueError("remove_child called on non-child")
+        del self.children[child.name]
+        child.parent = None
+
+    def __setattr_hook__(self, name, value, delete=False):
+        BranchingObject.__setattr_hook__(self, name, value, delete)
+        if delete:
+            value = self.getattr(name)
+            if isinstance(value, GameObjectType) and value.parent == self and str(name) == value.name:
+                self.remove_child(value)
+        elif isinstance(value, GameObjectType) and name != 'parent' and value.parent is None:
             self.add_child(value, str(name))
+
+    def on_choice(self, choice):
+        "called when a child Choice has its value set"
+        pass
 
     def debug_print(self, indent=0):
         print(' '*indent+self.name, self)
@@ -649,6 +665,15 @@ GameObject = GameObjectType()
 
 class ChoiceType(GameObjectType):
     default = None
+
+    value = None
+    known = False
+
+    def set(self, value):
+        self.value = value
+        self.known = True
+        if self.parent is not None:
+            self.parent.on_choice(self)
 
 Choice = ChoiceType()
 
@@ -679,13 +704,37 @@ class GameType(GameObjectType):
 
 Game = GameType()
 
+class VertexType(GameObjectType):
+    pass
+
+Vertex = VertexType
+
 class GridMapType(GameObjectType):
     def __ctor__(self, *args, **kwargs):
         GameObjectType.__ctor__(self, *args, **kwargs)
         self.Width = IntegerChoice(minimum=1, default=10)
         self.Height = IntegerChoice(minimum=1, default=10)
 
-    # TODO: cells
+    def new_cell(self, x, y):
+        return VertexType()
+
+    def on_choice(self, choice):
+        if (choice in (self.Width, self.Height) and
+            self.Width.known and self.Height.known):
+            width = self.Width.value
+            height = self.Height.value
+            x = 0
+            while x < width or self.hasattr((x, 0)):
+                y = 0
+                while y < height or self.hasattr((x, y)):
+                    if x < width and y < height:
+                        if not self.hasattr((x, y)):
+                            self.setattr((x, y), self.new_cell(x, y))
+                    else:
+                        self.delattr((x, y))
+                    y += 1
+                x += 1
+
     # TODO: links
 
 GridMap = GridMapType()
@@ -774,4 +823,19 @@ if __name__ == '__main__':
     world = World()
     maze = MazeGame()
     world.add_game(maze)
-    world.debug_print()
+    assert('(0, 0)' not in maze.map.children)
+
+    maze.map.Width.set(3)
+    maze.map.Height.set(4)
+    assert('(0, 0)' in maze.map.children)
+    assert('(2, 3)' in maze.map.children)
+
+    maze.map.Width.set(5)
+    maze.map.Height.set(2)
+    assert('(2, 1)' in maze.map.children)
+    assert('(1, 2)' not in maze.map.children)
+
+    maze.map.Width.set(2)
+    maze.map.Height.set(5)
+    assert('(2, 1)' not in maze.map.children)
+    assert('(1, 2)' in maze.map.children)
