@@ -29,10 +29,6 @@
 #  world_dictionary values should be immutable or a BranchingObject, or they will be unaffected by forks
 
 # TODO:
-#  * Make it possible to use a dict in GameObject
-#   * dictionaries should be automatically converted on assignment
-#   * BranchingObject instances need a prototype to hold class attributes
-#  * Use a dict in GameObject for children
 #  * Make it possible to subclass a BranchingObject instance
 
 class Condition:
@@ -705,9 +701,24 @@ class GameType(GameObjectType):
 Game = GameType()
 
 class VertexType(GameObjectType):
-    pass
+    "Anything a player can have or be denied access to. Once a player has access to a vertex, that is permanent and lasts the entire game."
 
-Vertex = VertexType
+Vertex = VertexType()
+
+class PositionType(GameObjectType):
+    '''A place that a player can "be". This could be a room, a door, or a position in space.
+Access may be dependent on temporary state like whether a switch has been flipped, so this is not a vertex. Use the access_any_state property or (TODO) access_with_state method to get a vertex.
+
+Attributes:
+transient = Boolean value. If True, the player cannot actually *be* here but can pass through here to connect to other areas. An example would be a map screen which can be used in a pause menu to teleport.
+
+Properties:
+access_any_state = A vertex indicating that the player can access this position in at least one possible state.
+ports = A list of port objects which can be used to exit or enter this position. To modify this list, assign a PortType object as an attribute or using the add_child/remove_child methods.'''
+
+    transient = False
+
+Position = PositionType()
 
 class GridMapType(GameObjectType):
     def __ctor__(self, *args, **kwargs):
@@ -716,7 +727,7 @@ class GridMapType(GameObjectType):
         self.Height = IntegerChoice(minimum=1, default=10)
 
     def new_cell(self, x, y):
-        return VertexType()
+        return PositionType()
 
     def on_choice(self, choice):
         if (choice in (self.Width, self.Height) and
