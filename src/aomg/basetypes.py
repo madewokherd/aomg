@@ -660,20 +660,59 @@ class GameObjectType(BranchingObject):
 GameObject = GameObjectType()
 
 class ChoiceType(GameObjectType):
+    """A choice that can be made at configuration time or randomly at seed generation time.
+
+Attributes:
+default = The default value for this choice, or None if there is no default. For right now, this has no effect.
+known = Boolean indicating whether a value has been selected for this choice.
+
+Properties:
+value = The value selected for this choice if set. Accessing this is equivalent to the get_value and set_value methods.
+
+Todo:
+Add a concept of a "strategy" which can be used to make this choice randomly at seed generation time.
+"""
     default = None
 
-    value = None
+    _value = None
     known = False
 
-    def set(self, value):
-        self.value = value
+    def test_constraints(self, value):
+        "Called when set() is called to make sure value is permitted. Raise ValueError if not."
+        pass
+
+    def on_set(self, value):
+        "Called after a value has been set."
+        pass
+
+    def set_value(self, value):
+        "Sets this choice's value. This calls the test_constraints and on_set methods on self, and on_choice on the parent object."
+        self.test_constraints(value)
+        self._value = value
         self.known = True
+        self.on_set(value)
         if self.parent is not None:
             self.parent.on_choice(self)
+
+    def get_value(self):
+        if not self.known:
+            raise ValueError("No value has been set yet")
+        return self._value
+
+    value = property(get_value, set_value)
 
 Choice = ChoiceType()
 
 class NumericalChoiceType(ChoiceType):
+    """A choice with a numerical value.
+
+Attributes:
+maximum = The greaest value this choice can have.
+minimum = The lowest value this choice can have.
+
+Todo:
+Enforce constraints.
+Add possibility to make maximum and minimum exclusive rather than inclusive?"""
     minimum = None
     maximum = None
 
@@ -705,9 +744,94 @@ class VertexType(GameObjectType):
 
 Vertex = VertexType()
 
+class PortType(ChoiceType):
+    """A type of object that links a game object to a different game object. Ports work by linking to other ports. Once linked, the parent object will be notified via the on_choice method.
+
+Attributes:
+can_self_connect = A boolean value indicating whether this port can be connected to itself.
+compatible_types = A tuple of classes of ports to which this port can connect.
+chosen_connections = A dictionary of connected ports to the number of connections to that port. Unlike value, this attribute is valid when known is Falseand is expected to be modified after it's initially set.
+maximum_connections = The maximum number of ports this port can connect to, including multiple connections to the same port. None for unlimited
+maximum_unique_connections = The maximum number of ports this port can connect to, ignoring multiple connections to the same port. None for unlimited.
+minimum_connections = The minimum number of ports this port must connect to, including multiple connections to the same port.
+minimum_unique_connections = The minimum number of ports this port must connect to, ignoring multiple connections to the same port.
+value = A dictionary of connected ports to the number of connections to that port.
+"""
+    can_self_connect = False
+    maximum_connections = 1
+    maximum_unique_connections = 1
+    minimum_connections = 1
+    minimum_unique_connections = 1
+
+    def __ctor__(self, *args, **kwargs):
+        ChoiceType.__ctor__(self, *args, **kwargs)
+        self.chosen_connections = {}
+
+    def commit(self):
+        self.value = self.chosen_connections
+
+    def test_connect(self, other, count=1, test_other=True):
+        """Raises ValueError if a connect() call with the same arguments would fail, otherwise does nothing."""
+        if count < 0:
+            raise ValueError("count cannot be fewer than 0")
+        if self.known:
+            raise ValueError("This port object can no longer be modified (known == True).")
+        if not isinstance(other, self.compatible_types):
+            raise ValueError("The other port has an incompatible type")
+        if self.maximum_unique_connections is not None:
+            new_connections = len(self.chosen_connections) - (1 if other in self.chosen_connections else 0) + (1 if count else 0)
+            if new_connections > self.maximum_unique_connections:
+                raise ValueError("This would put the number of unique connections above self.maximum_unique_connections")
+        if self.maximum_connections is not None:
+            new_connections = sum(self.chosen_connections.values()) - (self.chosen_connections.get(other)) + count
+            if new_connections > self.maximum_connections:
+                raise ValueError("This would put the number of connections above self.maximum_connections")
+        if test_other:
+            other.test_connect(self, count, False)
+
+    def connect(self, other, count=1):
+        """Connect this port to another port.
+
+This will set the total number of connections to 1 (or another count if specified)."""
+        self.test_connect(self, other, count)
+        self.chosen_connections[other] = count
+        other.chosen_connections[self] = count
+
+    def multi_connect(self, other, count=1):
+        "Add a specific number of connections to another port."
+        self.connect(other, self.chosen_connections.get(other, 0)+count)
+
+    def disconnect(self, other, count=None):
+        "Remove a connection to another port. If count is set to a number, that many connections will be removed, otherwise all connections will be removed."
+        if count is None:
+            self.connect(other, count=0)
+        else:
+            new_count = self.chosen_connections.get(other, 0) - count
+            if new_count < 0:
+                raise ValueError("A count was specified that is greater than the number of existing connections to the other object.")
+            self.connect(other, count=new_count)
+
+PortType.compatible_types = (PortType,)
+
+Port = PortType()
+
+class MovementPortType(PortType):
+    """A port that allows a player to travel from one position to another.
+    
+Todo:
+can_enter = Condition indicating whether it's possible to enter self.parent through a connected port.
+can_exit = Condition indicating whether it's possible to exit self.parent through a connected port.
+enter_transitions = List of state transitions and constraints triggered when entering through this port.
+exit_transitions = List of state transitions and constraints triggered when exiting through this port.
+"""
+
+MovementPortType.compatible_types = (MovementPortType,)
+
+MovementPort = MovementPortType()
+
 class PositionType(GameObjectType):
     '''A place that a player can "be". This could be a room, a door, or a position in space.
-Access may be dependent on temporary state like whether a switch has been flipped, so this is not a vertex. Use the access_any_state property or (TODO) access_with_state method to get a vertex.
+Access may be dependent on temporary state like whether a switch has been flipped, so this is not a vertex. Use the access_any_state property or access_with_state method to get a vertex (TODO: implement these).
 
 Attributes:
 transient = Boolean value. If True, the player cannot actually *be* here but can pass through here to connect to other areas. An example would be a map screen which can be used in a pause menu to teleport.
@@ -836,17 +960,17 @@ if __name__ == '__main__':
     world.add_game(maze)
     assert('(0, 0)' not in maze.map.children)
 
-    maze.map.Width.set(3)
-    maze.map.Height.set(4)
+    maze.map.Width.set_value(3)
+    maze.map.Height.set_value(4)
     assert('(0, 0)' in maze.map.children)
     assert('(2, 3)' in maze.map.children)
 
-    maze.map.Width.set(5)
-    maze.map.Height.set(2)
+    maze.map.Width.value = 5
+    maze.map.Height.value = 2
     assert('(2, 1)' in maze.map.children)
     assert('(1, 2)' not in maze.map.children)
 
-    maze.map.Width.set(2)
-    maze.map.Height.set(5)
+    maze.map.Width.value = 2
+    maze.map.Height.set_value(5)
     assert('(2, 1)' not in maze.map.children)
     assert('(1, 2)' in maze.map.children)
