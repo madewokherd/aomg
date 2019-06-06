@@ -783,7 +783,7 @@ value = A dictionary of connected ports to the number of connections to that por
             if new_connections > self.maximum_unique_connections:
                 raise ValueError("This would put the number of unique connections above self.maximum_unique_connections")
         if self.maximum_connections is not None:
-            new_connections = sum(self.chosen_connections.values()) - (self.chosen_connections.get(other)) + count
+            new_connections = sum(self.chosen_connections.values()) - (self.chosen_connections.get(other, 0)) + count
             if new_connections > self.maximum_connections:
                 raise ValueError("This would put the number of connections above self.maximum_connections")
         if test_other:
@@ -793,9 +793,13 @@ value = A dictionary of connected ports to the number of connections to that por
         """Connect this port to another port.
 
 This will set the total number of connections to 1 (or another count if specified)."""
-        self.test_connect(self, other, count)
-        self.chosen_connections[other] = count
-        other.chosen_connections[self] = count
+        self.test_connect(other, count)
+        if count == 0:
+            del self.chosen_connections[other]
+            del other.chosen_connections[self]
+        else:
+            self.chosen_connections[other] = count
+            other.chosen_connections[self] = count
 
     def multi_connect(self, other, count=1):
         "Add a specific number of connections to another port."
@@ -810,6 +814,13 @@ This will set the total number of connections to 1 (or another count if specifie
             if new_count < 0:
                 raise ValueError("A count was specified that is greater than the number of existing connections to the other object.")
             self.connect(other, count=new_count)
+
+    def disconnect_all(self):
+        "Remove all connections to other ports."
+        while self.chosen_connections:
+            for other in self.chosen_connections:
+                self.connect(other, count=0)
+                break
 
 PortType.compatible_types = (PortType,)
 
@@ -851,7 +862,22 @@ class GridMapType(GameObjectType):
         self.Height = IntegerChoice(minimum=1, default=10)
 
     def new_cell(self, x, y):
-        return PositionType()
+        return PositionType(x=x, y=y,
+            North=MovementPortType(), South=MovementPortType(),
+            East=MovementPortType(), West=MovementPortType())
+
+    def connect_cells_horizontal(self, west, east):
+        west.East.disconnect_all()
+        east.West.disconnect_all()
+        west.East.connect(east.West)
+
+    def connect_cells_vertical(self, north, south):
+        north.South.disconnect_all()
+        south.North.disconnect_all()
+        north.South.connect(south.North)
+
+    def connect_cell_edge(self, cell, name):
+        cell.getattr(name).disconnect_all()
 
     def on_choice(self, choice):
         if (choice in (self.Width, self.Height) and
@@ -865,8 +891,24 @@ class GridMapType(GameObjectType):
                     if x < width and y < height:
                         if not self.hasattr((x, y)):
                             self.setattr((x, y), self.new_cell(x, y))
+                            if x > 0:
+                                self.connect_cells_horizontal(self.getattr((x-1, y)), self.getattr((x, y)))
+                            else:
+                                self.connect_cell_edge(self.getattr((x, y)), "West")
+                            if x == width-1:
+                                self.connect_cell_edge(self.getattr((x, y)), "East")
+                            if y > 0:
+                                self.connect_cells_vertical(self.getattr((x, y-1)), self.getattr((x, y)))
+                            else:
+                                self.connect_cell_edge(self.getattr((x, y)), "North")
+                            if y == height-1:
+                                self.connect_cell_edge(self.getattr((x, y)), "South")
                     else:
                         self.delattr((x, y))
+                        if x == width and y < height:
+                            self.connect_cell_edge(self.getattr((x-1, y)), "East")
+                        if y == height and x < width:
+                            self.connect_cell_edge(self.getattr((x, y-1)), "South")
                     y += 1
                 x += 1
 
