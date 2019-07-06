@@ -755,6 +755,9 @@ TODO: Track known-impossible values? Dependent vertices?"""
 
 EnumChoice = EnumChoiceType()
 
+class ContradictionException(Exception):
+    pass
+
 class WorldType(GameObjectType):
     def __ctor__(self, *args, **kwargs):
         GameObjectType.__ctor__(self, *args, **kwargs)
@@ -765,18 +768,26 @@ class WorldType(GameObjectType):
         self.add_child(child)
         self.games[child.name] = child
 
+    def deduce(self):
+        # TODO: expensive deductions, at random
+
+        while self.fast_deduction_objects:
+            obj, _ = self.fast_deduction_objects.popitem()
+            obj.fast_deduce()
+
     def generate(self, seed=None):
-        # TODO: make any choices that lead to other choices first
+        world = self.fork()
 
         # Mark all objects as requiring deduction
-        object_queue = [self]
+        object_queue = [world]
         while object_queue:
             obj = object_queue.pop()
             obj.mark_fast_deduction()
             for child in obj.children.values():
                 object_queue.append(child)
 
-        # Make deductions (include expensive deductions, at random)
+        # Make deductions
+        world.deduce()
 
         # Collect all choices and sort randomly
 
