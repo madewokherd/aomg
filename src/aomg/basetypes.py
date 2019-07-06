@@ -723,6 +723,18 @@ class IntegerChoiceType(NumericalChoiceType):
 
 IntegerChoice = IntegerChoiceType()
 
+class EnumChoiceType(ChoiceType):
+    """A choice which must have exactly one out of a pre-determined list of values
+
+Attributes:
+values = A tuple of string values. This may be set on the class or an individual choice, but it shouldn't be set for both.
+value_names = An optional mapping of string values to human-readable names.
+value_descriptions = An optional mapping of string values to descriptions.
+
+TODO: Track known-impossible values? Dependent vertices?"""
+
+EnumChoice = EnumChoiceType()
+
 class WorldType(GameObjectType):
     def __ctor__(self, *args, **kwargs):
         GameObjectType.__ctor__(self, *args, **kwargs)
@@ -740,7 +752,20 @@ class GameType(GameObjectType):
 Game = GameType()
 
 class VertexType(GameObjectType):
-    "Anything a player can have or be denied access to. Once a player has access to a vertex, that is permanent and lasts the entire game."
+    """Anything a player can have or be denied access to. Once a player has access to a vertex, that is permanent and lasts the entire game.
+
+Attributes:
+condition = A necessary and sufficient condition to access this vertex. If None, this isn't known yet.
+dependent_vertices = A set of vertices which may need to be updated when this one changes.
+is_known = A boolean value indicating whether the reachability of this vertex is known for the rest of the game.
+known_access = If is_known, whether the vertex is reachable.
+necessary_condition = A necessary condition to access this vertex. If this condition is known false, the vertex is known unreachable. This defaults to TrueCondition. For this value to transition from A to B, B must imply A.
+sufficient_condition = A sufficient condition to access this vertex. If this condition is known true, the vertex is reachable. This defaults to FalseCondition. For this value to transition from A to B, A must imply B.
+
+TODO: get_referenced_vertices, update_referenced_vertices
+deduction functions?
+"""
+
 
 Vertex = VertexType()
 
@@ -916,11 +941,35 @@ class GridMapType(GameObjectType):
 
 GridMap = GridMapType()
 
-# TODO: move this
+# TODO: move maze stuff
+
+class MazeObstacleChoiceType(EnumChoiceType):
+    values = ("Nothing", "Wall")
+    # TODO: one way north/east, one way south/west, locked, destructable, switch1A,1B,2A,2B,3A,3B
+
+    def __ctor__(self, cell_a, cell_b):
+        self.cells = (cell_a, cell_b)
+
+class MazeMap(GridMapType):
+    def connect_cells_horizontal(self, west, east):
+        GridMapType.connect_cells_horizontal(self, west, east)
+        self.setattr('EastObstacle' + str((west.x, west.y)), MazeObstacleChoiceType(west, east))
+
+    def connect_cells_vertical(self, north, south):
+        GridMapType.connect_cells_vertical(self, north, south)
+        self.setattr('SouthObstacle' + str((north.x, north.y)), MazeObstacleChoiceType(north, south))
+
+    def connect_cell_edge(self, cell, name):
+        GridMapType.connect_cell_edge(self, cell, name)
+        try:
+            self.delattr(name + 'Obstacle' + str((cell.x, cell.y)))
+        except AttributeError:
+            pass
+
 class MazeGame(GameType):
     def __ctor__(self, *args, **kwargs):
         GameType.__ctor__(self, *args, **kwargs)
-        self.map = GridMap()
+        self.map = MazeMap()
 
 # TODO: move tests
 if __name__ == '__main__':
