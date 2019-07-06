@@ -652,6 +652,26 @@ class GameObjectType(BranchingObject):
         "called when a child Choice has its value set"
         pass
 
+    def get_world(self):
+        obj = self
+        while not isinstance(obj, WorldType):
+            obj = obj.parent
+        return obj
+
+    def mark_fast_deduction(self):
+        "Indicates that fast_deduce() should be called on this object"
+        world = self.get_world()
+        if world is not None:
+            world.fast_deduction_objects[self] = True
+
+    def fast_deduce(self):
+        """Called during generation. Objects should make checks to find contradictions or eliminate choices provided they:
+1. Are completable in O(1) time. (This may result in calls to mark_fast_deduction and thus further calls to fast_deduce. Overall, this should be completable in linear time based on the number of objects involved.)
+2. Have a good chance of finding impossible choices early. As choices are attempted, the fast deductions should be exploring the immediate consequences.
+
+This can be used for tasks that are required to generate the world, such as determining the conditions for reaching a vertex based on some choice once it's been made."""
+        pass
+
     def debug_print(self, indent=0):
         print(' '*indent+self.name, self)
         for child in self.children.values():
@@ -739,10 +759,41 @@ class WorldType(GameObjectType):
     def __ctor__(self, *args, **kwargs):
         GameObjectType.__ctor__(self, *args, **kwargs)
         self.games = {}
+        self.fast_deduction_objects = {}
 
     def add_game(self, child):
         self.add_child(child)
         self.games[child.name] = child
+
+    def generate(self, seed=None):
+        # TODO: make any choices that lead to other choices first
+
+        # Mark all objects as requiring deduction
+        object_queue = [self]
+        while object_queue:
+            obj = object_queue.pop()
+            obj.mark_fast_deduction()
+            for child in obj.children.values():
+                object_queue.append(child)
+
+        # Make deductions (include expensive deductions, at random)
+
+        # Collect all choices and sort randomly
+
+        # while choices remain:
+        # - save state
+        # - make the choice
+        # - push state and the choice we made
+        # - make deductions
+        # - if contradiction
+        #   + boost probability of any expensive deductions involved
+        #   + restore state and mark that the choice made is not possible
+        #   + make deductions
+        #   + while contradiction
+        #     - boost probability of any expensive deductions involved, AND the choice we attempted to make
+        #     - binary search to find the most recent state that holds up given the specific set of expensive deductions
+        #     - mark the recent state's corresponding choice as not possible
+        pass
 
 World = WorldType()
 
@@ -948,6 +999,7 @@ class MazeObstacleChoiceType(EnumChoiceType):
     # TODO: one way north/east, one way south/west, locked, destructable, switch1A,1B,2A,2B,3A,3B
 
     def __ctor__(self, cell_a, cell_b):
+        EnumChoiceType.__ctor__(self)
         self.cells = (cell_a, cell_b)
 
 class MazeMap(GridMapType):
@@ -1065,3 +1117,9 @@ if __name__ == '__main__':
     maze.map.Height.set_value(5)
     assert('(2, 1)' not in maze.map.children)
     assert('(1, 2)' in maze.map.children)
+
+    # test generation
+    maze.map.Width.value = 10
+    maze.map.Height.value = 10
+
+    world.generate()
