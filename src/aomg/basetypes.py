@@ -194,6 +194,7 @@ class BranchingObject(object):
         bases_stack = []
         iters_stack = []
         seen = {self.fork_base}
+        seen_ids = {id(self.fork_base)}
         objs = set()
         bases_stack.append(self.fork_base)
         iters_stack.append(self.fork_base.__collect_universes__())
@@ -206,8 +207,9 @@ class BranchingObject(object):
                 bases_stack.pop(-1)
                 iters_stack.pop(-1)
             else:
-                if n in seen or n in bases_stack:
+                if id(n) in seen_ids:
                     continue
+                seen_ids.add(id(n))
                 if isinstance(n, BranchingObject):
                     if n.fork_base is not self.fork_base:
                         objs.add(n)
