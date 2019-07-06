@@ -315,7 +315,8 @@ class BranchingObject(object):
 
     def __eq__(self, other):
         if isinstance(other, BranchingObject):
-            return id(self.fork_object) == id(other.fork_object) and id(self.fork_base) == id(other.fork_base)
+            return id(object.__getattribute__(self, 'fork_object')) == id(object.__getattribute__(other, 'fork_object')) and \
+                id(object.__getattribute__(self, 'fork_base')) == id(object.__getattribute__(other, 'fork_base'))
         return False
 
     def __repr__(self):
