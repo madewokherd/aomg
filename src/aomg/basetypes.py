@@ -700,10 +700,22 @@ class WorldType(GameObjectType):
             for child in obj.children.values():
                 object_queue.append(child)
 
+        # TODO: allow "early" choices which we can make without danger of backtracking
+
         # Make deductions
         world.deduce()
 
         # Collect all choices and sort randomly
+        choices = []
+        object_queue = [world]
+        while object_queue:
+            obj = object_queue.pop()
+            if isinstance(obj, ChoiceType) and not obj.known:
+                choices.append(obj)
+            for child in obj.children.values():
+                object_queue.append(child)
+
+        print(choices)
 
         # while choices remain:
         # - save state
