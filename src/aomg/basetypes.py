@@ -58,173 +58,169 @@ def _readable_name(x):
             qualname = str(x)
     return module+qualname
 
-_branchingobject_slots = {'fork_base', 'fork_object', 'world_dictionary', 'base_fork_base', 'base_fork_object', 'base_world_dictionary', 'alt_obj_mapping'}
-
 class _NOTHING(object):
     "sentinal value for BranchingObject, nothing to see here"
 _NOTHING = _NOTHING()
 
+class Universe:
+    __slots__ = ['dictionary', 'dictionary_is_readonly', 'readonly', 'related_universes', 'base_universes', 'object_to_base', 'base_to_object']
+
+    def __init__(self, readonly_copy_of=None, base_universes=None):
+        if readonly_copy_of is not None:
+            self.dictionary = readonly_copy_of.dictionary
+            self.dictionary_is_readonly = True
+            self.readonly = True
+            self.related_universes = None
+            self.base_universes = readonly_copy_of.base_universes
+            self.object_to_base = readonly_copy_of.object_to_base.copy()
+            self.base_to_object = readonly_copy_of.base_to_object.copy()
+        elif base_universes is not None:
+            self.dictionary = {}
+            self.dictionary_is_readonly = False
+            self.readonly = False
+            self.related_universes = {self}
+            self.base_universes = base_universes
+            self.object_to_base = {}
+            self.base_to_object = {}
+        else:
+            self.dictionary = {}
+            self.dictionary_is_readonly = False
+            self.readonly = False
+            self.related_universes = {self}
+            self.base_universes = {} # mapping of original base universes to read-only copies
+            self.object_to_base = {}
+            self.base_to_object = {}
+
+    def combine_universes(self, value):
+        "add value's universe to related_universes"
+        if isinstance(value, BranchingObject):
+            if value.__universe__.related_universes is not self.related_universes:
+                if len(value.__universe__.related_universes) > len(self.related_universes):
+                    greater = value.__universe__.related_universes
+                    lesser = self.related_universes
+                else:
+                    greater = self.related_universes
+                    lesser = value.__universe__.related_universes
+                greater.update(lesser)
+                for universe in lesser:
+                    universe.related_universes = greater
+        elif isinstance(value, tuple):
+            for item in value:
+                self.combine_universes(item)
+        else:
+            try:
+                value.__combine_universes__(self)
+            except AttributeError:
+                pass
+
+    def translate_to_base(self, obj):
+        if isinstance(obj, BranchingObject):
+            return self.object_to_base[obj][0]
+        elif isinstance(obj, tuple):
+            return tuple(self.translate_to_base(x) for x in obj)
+        else:
+            try:
+                return obj.__translate_to_base__(self)
+            except AttributeError:
+                return obj
+
+    def translate_from_base(self, obj):
+        if isinstance(obj, BranchingObject):
+            try:
+                return self.base_to_object[obj]
+            except KeyError:
+                self.base_to_object[obj] = result = type(obj).__new__(type(obj))
+                object.__setattr__(result, '__universe__', self)
+                self.object_to_base[result] = obj, self.base_universes[object.__getattribute__(obj, '__universe__')]
+                return result
+        elif isinstance(obj, tuple):
+            return tuple(self.translate_from_base(x) for x in obj)
+        else:
+            try:
+                return obj.__translate_from_base__(self)
+            except AttributeError:
+                return obj
+
+    def setattr(self, obj, key, value):
+        if self.readonly:
+            raise ValueError("Universe is readonly")
+        if self.dictionary_is_readonly:
+            self.dictionary = self.dictionary.copy()
+            self.dictionary_is_readonly = False
+        self.dictionary[obj, key] = value
+        self.combine_universes(key)
+        self.combine_universes(value)
+
+    def getattr(self, obj, key):
+        try:
+            result = self.dictionary[obj, key]
+        except KeyError:
+            pass
+        else:
+            return result
+
+        try:
+            base_obj, base_universe = self.object_to_base[obj]
+            base_key = self.translate_to_base(key)
+        except KeyError:
+            pass
+        else:
+            try:
+                result = base_universe.getattr(base_obj, base_key)
+            except AttributeError:
+                pass
+            else:
+                return self.translate_from_base(result)
+
+        raise AttributeError()
+
+    def readonly_copy(self):
+        if self.readonly:
+            return self
+        self.dictionary_is_readonly = True
+        return Universe(readonly_copy_of=self)
+
+    def fork(self):
+        # make a readonly copy of every related universe
+        base_universes = {}
+        for universe in self.related_universes:
+            base_universes[universe] = universe.readonly_copy()
+        return Universe(base_universes=base_universes)
+
+    def debug_dump(self, indent='', parent=None):
+        objects = set()
+        objects.update(self.object_to_base.keys())
+        for k in self.dictionary.keys():
+            objects.add(k[0])
+        print(indent+'Objects:')
+        for obj in objects:
+            print(indent+'  '+repr(obj))
+            if obj in self.object_to_base:
+                print(indent+'    To base:', self.object_to_base[obj][0], self.object_to_base[obj][1])
+            if parent is not None and obj in parent.base_to_object:
+                print(indent+'    From base:', parent.base_to_object[obj])
+            for k, v in self.dictionary.items():
+                if k[0] != obj:
+                    continue
+                print(indent+'    '+repr(k[1]), '=', repr(v))
+        if self.base_universes:
+            print(indent+'Bases:')
+            for k, v in self.base_universes.items():
+                print(indent+'  '+repr(k), repr(v))
+                v.debug_dump(indent+'  ', self)
+                
+
 standard_branching_types = {}
 
 class BranchingObject(object):
-    __slots__ = list(_branchingobject_slots)
+    __slots__ = ['__universe__']
 
     def __init__(self, *args, **kwargs):
-        self.alt_obj_mapping = None
-
-        # check for special forms
-        if 'forked_from' in kwargs:
-            base = kwargs['forked_from']
-            self.world_dictionary = {}
-            self.fork_base = self
-            self.fork_object = self
-            self.alt_obj_mapping = {}
-
-            # collect universes as fork_base values, and BranchingObject's needing remapped
-            alt_bases, alt_objs_set = base._collect_universes()
-
-            if not base.base_world_dictionary or len(base.world_dictionary)**2 >= len(base.base_world_dictionary):
-                # make a new base_world_dictionary combining base.base_world_dictionary and base.world_dictionary
-                new_base_dictionary = True
-                self.base_world_dictionary = {}
-                self.base_fork_base = base.fork_base
-                self.base_fork_object = base.fork_object
-            else:
-                # make a new world_dictionary combining base.world_dictionary and other universes
-                new_base_dictionary = False
-                self.base_world_dictionary = base.base_world_dictionary
-                self.base_fork_base = base.base_fork_base
-                self.base_fork_object = base.base_fork_object
-
-            # create a clone of each alt-universe object for the new world_dictionary
-            for obj in alt_objs_set:
-                world_obj = type(obj)(internal_new=True)
-                world_obj.base_world_dictionary = self.base_world_dictionary
-                world_obj.base_fork_base = self.base_fork_base
-                world_obj.base_fork_object = obj
-                world_obj.alt_obj_mapping = None
-                world_obj.world_dictionary = self.world_dictionary
-                world_obj.fork_base = self
-                world_obj.fork_object = world_obj
-                self.alt_obj_mapping[obj] = world_obj
-
-            # map attributes from the other universes into our world_dictionary
-            for alt_base in alt_bases:
-                if alt_base.base_world_dictionary:
-                    for key, value in alt_base.base_world_dictionary.items():
-                        key = translate_from_base(alt_base, key)
-                        if key in alt_base.world_dictionary:
-                            continue
-                        key = translate_from_base(self, key)
-                        value = translate_from_base(alt_base, value)
-                        value = translate_from_base(self, value)
-                        self.world_dictionary[key] = value
-                for key, value in alt_base.world_dictionary.items():
-                    self.world_dictionary[translate_from_base(self, key)] = translate_from_base(self, value)
-
-            if new_base_dictionary:
-                if base.base_world_dictionary:
-                    for key, value in base.base_world_dictionary.items():
-                        self.base_world_dictionary[translate_from_base(base, key)] = translate_from_base(base, value)
-                self.base_world_dictionary.update(base.world_dictionary)
-                self.base_world_dictionary = FrozenDict(self.base_world_dictionary)
-            else: # new world_dictionary from base's world_dictionary values
-                # make a temporary object to translate from base's world to our world
-                temp_base = BranchingObject(internal_new=True)
-                temp_base.base_world_dictionary = base.world_dictionary
-                temp_base.base_fork_base = base.fork_base
-                temp_base.base_fork_object = base.fork_object
-                temp_base.alt_obj_mapping = self.alt_obj_mapping
-                temp_base.world_dictionary = self.world_dictionary
-                temp_base.fork_base = self.fork_base
-                temp_base.fork_object = self.fork_object
-                for key, value in base.world_dictionary.items():
-                    self.world_dictionary[translate_from_base(temp_base, key)] = translate_from_base(temp_base, value)
-
-            return
-
-        if 'translate_base' in kwargs and 'translate_gameobject' in kwargs:
-            # translate from base universe to current
-            base = kwargs['translate_base']
-            gameobject = kwargs['translate_gameobject']
-            self.world_dictionary = gameobject.world_dictionary
-            self.fork_base = gameobject.fork_base
-            self.fork_object = base.fork_object
-            if base.fork_object is not gameobject.base_fork_object:
-                # value is external to base universe
-                raise ValueError()
-            self.base_world_dictionary = gameobject.base_world_dictionary
-            self.base_fork_base = gameobject.fork_base
-            self.base_fork_object = base.fork_object
-
-        if 'translate_to_base' in kwargs:
-            # make a stub object for the base universe
-            obj = kwargs['translate_to_base']
-            self.base_world_dictionary = None
-            self.base_fork_base = None
-            self.base_fork_object = None
-            self.world_dictionary = None
-            self.fork_base = obj.base_fork_base
-            self.fork_object = obj.base_fork_object
-            return
-
-        if 'internal_new' in kwargs:
-            return
-
-        # no special forms, fall back to generic
-        self.base_world_dictionary = None
-        self.base_fork_base = None
-        self.base_fork_object = None
-        self.world_dictionary = {}
-        self.fork_base = self
-        self.fork_object = self
+        object.__setattr__(self, '__universe__', Universe()) # FIXME: Use a metaclass to put this in __call__ ?
         self.__ctor__(*args, **kwargs)
 
-    def __collect_universes__(self):
-        "find any objects that might be part of a different universe"
-        if self.fork_base is not self.fork_object:
-            yield self.fork_base
-            return
-        for key, value in self.world_dictionary.items():
-            yield key
-            yield value
-
-    def _collect_universes(self):
-        "find all related universes to this one"
-        bases_stack = []
-        iters_stack = []
-        seen = {self.fork_base}
-        seen_ids = {id(self.fork_base)}
-        objs = set()
-        bases_stack.append(self.fork_base)
-        iters_stack.append(self.fork_base.__collect_universes__())
-        while bases_stack:
-            base = bases_stack[-1]
-            it = iters_stack[-1]
-            try:
-                n = it.__next__()
-            except StopIteration:
-                bases_stack.pop(-1)
-                iters_stack.pop(-1)
-            else:
-                if id(n) in seen_ids:
-                    continue
-                seen_ids.add(id(n))
-                if isinstance(n, BranchingObject):
-                    if n.fork_base is not self.fork_base:
-                        objs.add(n)
-                    if n.fork_base not in seen:
-                        seen.add(n.fork_base)
-                        bases_stack.append(n.fork_base)
-                        iters_stack.append(n.fork_base.__collect_universes__())
-                else:
-                    bases_stack.append(n)
-                    iters_stack.append(_collect_universes(n))
-        seen.remove(self.fork_base)
-        return seen, objs
-
     def __setattr__(self, name, value):
-        if name in _branchingobject_slots:
+        if name == '__universe__':
             object.__setattr__(self, name, value)
             return
         try:
@@ -242,12 +238,14 @@ class BranchingObject(object):
                 return fn(self, value)
         value = to_branching_object(value)
         self.__setattr_hook__(name, value, value is _NOTHING)
-        self.world_dictionary[self, name] = value
+        object.__getattribute__(self, '__universe__').setattr(self, name, value)
 
     def __setattr_hook__(self, name, value, delete=False):
         pass
 
     def __getattribute__(self, name):
+        if name == '__universe__':
+            return object.__getattribute__(self, name)
         try:
             prop = getattr(type(self), name)
         except AttributeError:
@@ -261,26 +259,19 @@ class BranchingObject(object):
                 pass
             else:
                 return fn(self)
-        if name not in _branchingobject_slots:
-            try:
-                result = self.world_dictionary[self, name]
-                if result is _NOTHING:
-                    raise AttributeError()
-                return result
-            except KeyError:
-                if self.base_world_dictionary:
-                    try:
-                        key = translate_to_base(self, (self, name))
-                        result = translate_from_base(self, self.base_world_dictionary[key])
-                        if result is _NOTHING:
-                            raise AttributeError()
-                        return result
-                    except KeyError:
-                        pass
+        try:
+            result = object.__getattribute__(self, '__universe__').getattr(self, name)
+        except AttributeError:
+            pass
+        else:
+            if result is _NOTHING:
+                raise AttributeError()
+            return result
         try:
             return object.__getattribute__(self, name)
         except TypeError:
-            raise AttributeError()
+            pass
+        raise AttributeError()
 
     setattr = __setattr__
 
@@ -312,21 +303,11 @@ class BranchingObject(object):
 
     __delattr__ = delattr = popattr
 
-    def __hash__(self):
-        return id(self.fork_object) + id(self.fork_base)
-
-    def __eq__(self, other):
-        if isinstance(other, BranchingObject):
-            return object.__getattribute__(self, 'fork_object') is object.__getattribute__(other, 'fork_object') and \
-                object.__getattribute__(self, 'fork_base') is object.__getattribute__(other, 'fork_base')
-        return False
-
-    def __repr__(self):
-        return "<{} object base={:#x} obj={:#x}>".format(_readable_name(type(self)), id(self.fork_base), id(self.fork_object))
-
     def fork(self):
-        """create a copy of this game object and all related objects"""
-        return type(self)(forked_from=self)
+        """create a copy of this object and all related objects"""
+        universe = object.__getattribute__(self, '__universe__')
+        new_universe = universe.fork()
+        return new_universe.translate_from_base(self)
 
     def __ctor__(self, *args, **kwargs):
         """override to handle arguments to this type or instances of it"""
@@ -339,76 +320,6 @@ class BranchingObject(object):
         result = self.fork()
         result.__ctor__(*args, **kwargs)
         return result
-
-    def __from_base__(self, gameobject):
-        if self.fork_object == gameobject.base_fork_base:
-            return gameobject.fork_base
-        if self.fork_object == gameobject.base_fork_object:
-            return gameobject
-        if self in gameobject.alt_obj_mapping:
-            return gameobject.alt_obj_mapping[self]
-        return type(self)(translate_base=self, translate_gameobject=gameobject)
-
-    def __to_base__(self, gameobject):
-        if self.base_fork_object is None:
-            raise ValueError()
-        if self.fork_base == gameobject.fork_base:
-            return type(self)(translate_to_base=gameobject)
-        else:
-            raise ValueError()
-
-def translate_from_base(gameobject, baseobject):
-    """translate a key or attribute from the game object's base universe to the forked one
-
-Implement __from_base__(self, gameobject) on the type of object being translated to override.
-
-The default behavior of GameObjectType will create a new instance in the new universe.
-
-Tuples will be translated recursively.
-
-This function may be called more than once for a single object in the base universe.
-The result does not have to be identical, but it must be equal and any modifications must be shared.
-
-This raises ValueError if the object was external to the base universe
-"""
-    try:
-        fn = baseobject.__from_base__
-    except AttributeError:
-        if isinstance(baseobject, tuple):
-            return tuple(translate_from_base(gameobject, x) for x in baseobject)
-        else:
-            return baseobject
-    else:
-        return fn(gameobject)
-
-def translate_to_base(gameobject, forkedobject):
-    """translate a key or attribute from the game object's universe to the base one
-
-Implement __to_base__(self, gameobject) on the type of object being translated to override.
-
-The base universe object must only be used for equality and hashing.
-
-This raises ValueError if the object did not exist in the base universe.
-"""
-    try:
-        fn = forkedobject.__to_base__
-    except AttributeError:
-        if isinstance(forkedobject, tuple):
-            return tuple(translate_to_base(gameobject, x) for x in forkedobject)
-        else:
-            return forkedobject
-    else:
-        return fn(gameobject)
-
-def _collect_universes(obj):
-    if isinstance(obj, tuple):
-        return iter(obj)
-    try:
-        fn = obj.__collect_universes__
-    except AttributeError:
-        return iter(())
-    else:
-        return fn()
 
 def to_branching_object(obj):
     try:
