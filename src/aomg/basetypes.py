@@ -31,6 +31,9 @@
 # TODO:
 #  * Make it possible to subclass a BranchingObject instance
 
+import hashlib
+import random
+
 class Condition:
     pass
 
@@ -507,6 +510,7 @@ standard_branching_types[dict] = _to_branching_dictionary
 class GameObjectType(BranchingObject):
     parent = None
     _name = None
+    _path = None
 
     def __ctor__(self, *args, **kwargs):
         self.children = {}
@@ -527,6 +531,19 @@ class GameObjectType(BranchingObject):
 
     name = property(_get_name, _set_name)
 
+    def _get_path(self):
+        if self._path is None:
+            if self.parent is None:
+                self._path = (self.name,)
+            else:
+                self._path = self.parent.path + (self.name,)
+        return self._path
+
+    path = property(_get_path)
+
+    def get_string_path(self):
+        return '.'.join(self.path)
+
     def add_child(self, child, name=None):
         if not isinstance(child, GameObjectType):
             raise TypeError("child must be an instance of GameObjectType")
@@ -544,6 +561,7 @@ class GameObjectType(BranchingObject):
         child.name = name
         self.children[name] = child
         child.parent = self
+        child._path = None
 
     def remove_child(self, child):
         if not isinstance(child, GameObjectType):
@@ -552,6 +570,7 @@ class GameObjectType(BranchingObject):
             raise ValueError("remove_child called on non-child")
         del self.children[child.name]
         child.parent = None
+        child._path = None
 
     def __setattr_hook__(self, name, value, delete=False):
         BranchingObject.__setattr_hook__(self, name, value, delete)
@@ -672,6 +691,30 @@ EnumChoice = EnumChoiceType()
 class ContradictionException(Exception):
     pass
 
+class RandomFactory:
+    def __init__(self, seed=None):
+        if seed is None:
+            r = random.SystemRandom()
+            seed = bytes(r.randint(0,255) for i in range(16))
+
+        if isinstance(seed, str):
+            seed = seed.encode('utf8')
+
+        self.seed = seed
+
+    def __call__(self, data):
+        if isinstance(data, str):
+            data = data.encode('utf8')
+
+        md5 = hashlib.new('md5')
+
+        md5.update(data)
+        md5.update(self.seed)
+
+        seed = int(md5.hexdigest(), 16) # this seems inefficient but is it worse than a loop in python?
+
+        return random.Random(seed)
+
 class WorldType(GameObjectType):
     def __ctor__(self, *args, **kwargs):
         GameObjectType.__ctor__(self, *args, **kwargs)
@@ -690,6 +733,8 @@ class WorldType(GameObjectType):
             obj.fast_deduce()
 
     def generate(self, seed=None):
+        self.rng = RandomFactory(seed)
+
         world = self.fork()
 
         # Mark all objects as requiring deduction
@@ -700,37 +745,44 @@ class WorldType(GameObjectType):
             for child in obj.children.values():
                 object_queue.append(child)
 
-        # TODO: allow "early" choices which we can make without danger of backtracking
-
         # Make deductions
         world.deduce()
 
-        # Collect all choices and sort randomly
         choices = []
-        object_queue = [world]
-        while object_queue:
-            obj = object_queue.pop()
-            if isinstance(obj, ChoiceType) and not obj.known:
-                choices.append(obj)
-            for child in obj.children.values():
-                object_queue.append(child)
 
-        print(choices)
+        while True:
+            # Collect all choices and sort randomly
+            if not choices:
+                object_queue = [world]
+                while object_queue:
+                    obj = object_queue.pop()
+                    if isinstance(obj, ChoiceType) and not obj.known:
+                        choices.append(obj)
+                    for child in obj.children.values():
+                        object_queue.append(child)
+                choices.sort(key=lambda x: self.rng(x.get_string_path()+'choice_order').random())
+                if not choices:
+                    break
+                
 
-        # while choices remain:
-        # - save state
-        # - make the choice
-        # - push state and the choice we made
-        # - make deductions
-        # - if contradiction
-        #   + boost probability of any expensive deductions involved
-        #   + restore state and mark that the choice made is not possible
-        #   + make deductions
-        #   + while contradiction
-        #     - boost probability of any expensive deductions involved, AND the choice we attempted to make
-        #     - binary search to find the most recent state that holds up given the specific set of expensive deductions
-        #     - mark the recent state's corresponding choice as not possible
-        pass
+            choice = choices.pop()
+            print(choice.path)
+            print(choice)
+            raise NotImplementedError() # to prevent infinite loop for now
+
+            # while choices remain:
+            # - save state
+            # - make the choice
+            # - push state and the choice we made
+            # - make deductions
+            # - if contradiction
+            #   + boost probability of any expensive deductions involved
+            #   + restore state and mark that the choice made is not possible
+            #   + make deductions
+            #   + while contradiction
+            #     - boost probability of any expensive deductions involved, AND the choice we attempted to make
+            #     - binary search to find the most recent state that holds up given the specific set of expensive deductions
+            #     - mark the recent state's corresponding choice as not possible
 
 World = WorldType()
 
@@ -1059,4 +1111,4 @@ if __name__ == '__main__':
     maze.map.Width.value = 10
     maze.map.Height.value = 10
 
-    world.generate()
+    world.generate('test seed')
