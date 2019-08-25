@@ -541,6 +541,26 @@ class GameObjectType(BranchingObject):
 
     path = property(_get_path)
 
+    def object_from_path(self, path, relative=False):
+        if relative:
+            pos = 0
+            parent = self
+        else:
+            # find root
+            pos = 1
+            obj = self
+            parent = None
+            while obj is not None:
+                if obj.name == path[0]:
+                    parent = obj
+                obj = obj.parent
+            if parent is None:
+                raise ValueError("Could not find root object %r" % path[0])
+        while pos < len(path):
+            parent = parent.children[path[pos]]
+            pos += 1
+        return parent
+
     def get_string_path(self):
         return '.'.join(self.path)
 
@@ -765,23 +785,28 @@ class WorldType(GameObjectType):
                     break
                 
 
-            choice = choices.pop()
-            print(choice)
-            raise NotImplementedError() # to prevent infinite loop for now
+            choice_path = choices.pop()
+            print(choice_path)
 
-            # while choices remain:
-            # - save state
-            # - make the choice
-            # - push state and the choice we made
-            # - make deductions
-            # - if contradiction
-            #   + boost probability of any expensive deductions involved
-            #   + restore state and mark that the choice made is not possible
-            #   + make deductions
-            #   + while contradiction
-            #     - boost probability of any expensive deductions involved, AND the choice we attempted to make
-            #     - binary search to find the most recent state that holds up given the specific set of expensive deductions
-            #     - mark the recent state's corresponding choice as not possible
+            while choices:
+                choice = world.object_from_path(choice_path)
+                print(choice)
+
+                # - save state
+                # - make the choice
+                # - push state and the choice we made
+                # - make deductions
+                # - if contradiction
+                #   + boost probability of any expensive deductions involved
+                #   + restore state and mark that the choice made is not possible
+                #   + make deductions
+                #   + while contradiction
+                #     - boost probability of any expensive deductions involved, AND the choice we attempted to make
+                #     - binary search to find the most recent state that holds up given the specific set of expensive deductions
+                #     - mark the recent state's corresponding choice as not possible
+
+                raise NotImplementedError() # to prevent infinite loop for now
+
 
 World = WorldType()
 
