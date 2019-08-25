@@ -646,7 +646,11 @@ class LogicError(Exception):
 This must only be raised from certain expected methods, such as GameObject.fast_deduce."""
 
 class ChoiceStrategy(BranchingObject):
-    """A method for making a choice, randomly or otherwise"""
+    """A method for making a choice, randomly or otherwise
+    
+applies_to = A tuple of choice types to which this strategy can be applied"""
+
+    applies_to = ()
 
     def __init__(self):
         if type(self) == ChoiceStrategy:
@@ -748,6 +752,19 @@ class IntegerChoiceType(NumericalChoiceType):
 
 IntegerChoice = IntegerChoiceType()
 
+class EnumEvenDistribution(ChoiceStrategy):
+    def make_choice(self, choice):
+        rng = choice.get_world().rng
+        value = min((v for v in choice.values if v not in choice.impossible_values),
+            key = lambda v: rng(choice.get_string_path()+'\0'+v+'\0EnumEvenDistribution').random())
+        choice.value = value
+        return value
+
+    def eliminate_choice(self, choice, token):
+        if token not in choice.impossible_values:
+            choice.impossible_values += (token,)
+            choice.mark_fast_deduction()
+
 class EnumChoiceType(ChoiceType):
     """A choice which must have exactly one out of a pre-determined list of values
 
@@ -755,8 +772,14 @@ Attributes:
 values = A tuple of string values. This may be set on the class or an individual choice, but it shouldn't be set for both.
 value_names = An optional mapping of string values to human-readable names.
 value_descriptions = An optional mapping of string values to descriptions.
+impossible_values = A tuple of string values known to be impossible. This must be a subset of values.
 
-TODO: Track known-impossible values? Dependent vertices?"""
+TODO: Track dependent vertices?"""
+    impossible_values = ()
+
+EnumEvenDistribution.applies_to = (EnumChoiceType,)
+
+EnumChoiceType.strategy = EnumEvenDistribution()
 
 EnumChoice = EnumChoiceType()
 
@@ -846,7 +869,7 @@ class WorldType(GameObjectType):
 
                 token = choice.make()
 
-                choices_made.push((saved_state, choice_path, token))
+                choices_made.append((saved_state, choice_path, token))
 
                 while True:
                     try:
@@ -861,8 +884,6 @@ class WorldType(GameObjectType):
                         #     - mark the recent state's corresponding choice as not possible
                     else:
                         break
-
-                raise NotImplementedError() # to prevent infinite loop for now
 
 
 World = WorldType()
