@@ -757,16 +757,15 @@ class WorldType(GameObjectType):
                 while object_queue:
                     obj = object_queue.pop()
                     if isinstance(obj, ChoiceType) and not obj.known:
-                        choices.append(obj)
+                        choices.append(obj.path)
                     for child in obj.children.values():
                         object_queue.append(child)
-                choices.sort(key=lambda x: self.rng(x.get_string_path()+'choice_order').random())
+                choices.sort(key=lambda x: self.rng('.'.join(x)+'choice_order').random())
                 if not choices:
                     break
                 
 
             choice = choices.pop()
-            print(choice.path)
             print(choice)
             raise NotImplementedError() # to prevent infinite loop for now
 
