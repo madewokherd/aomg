@@ -777,6 +777,19 @@ impossible_values = A tuple of string values known to be impossible. This must b
 TODO: Track dependent vertices?"""
     impossible_values = ()
 
+    def fast_deduce(self):
+        if len(self.impossible_values) + 1 >= len(self.values):
+            if len(self.impossible_values) + 1 == len(self.values):
+                for value in self.values:
+                    if value not in self.impossible_values:
+                        self.set_value(value)
+                        return
+                raise ValueError("%r has some impossible values not in values list")
+            elif len(self.impossible_values) == len(self.values):
+                raise LogicError("All potential values for %r lead to a contradiction" % self)
+            else:
+                raise ValueError("%r has too many impossible values")
+
 EnumEvenDistribution.applies_to = (EnumChoiceType,)
 
 EnumChoiceType.strategy = EnumEvenDistribution()
