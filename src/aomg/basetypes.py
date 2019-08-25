@@ -564,6 +564,12 @@ class GameObjectType(BranchingObject):
     def get_string_path(self):
         return '.'.join(self.path)
 
+    def __repr__(self):
+        if self._name is None:
+            # avoid side-effects from accessing self.name
+            return BranchingObject.__repr__(self)
+        return "<%s object at %s in universe 0x%x>" % (type(self).__name__, self.get_string_path(), id(self.__universe__))
+
     def add_child(self, child, name=None):
         if not isinstance(child, GameObjectType):
             raise TypeError("child must be an instance of GameObjectType")
