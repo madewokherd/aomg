@@ -940,6 +940,7 @@ value = A dictionary of connected ports to the number of connections to that por
 
 This will set the total number of connections to 1 (or another count if specified)."""
         self.test_connect(other, count)
+        self.mark_fast_deduction()
         if count == 0:
             del self.chosen_connections[other]
             del other.chosen_connections[self]
@@ -967,6 +968,10 @@ This will set the total number of connections to 1 (or another count if specifie
             for other in self.chosen_connections:
                 self.connect(other, count=0)
                 break
+
+    def fast_deduce(self):
+        if sum(self.chosen_connections.values()) == self.maximum_connections:
+            self.commit()
 
 PortType.compatible_types = (PortType,)
 
