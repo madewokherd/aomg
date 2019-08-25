@@ -622,7 +622,9 @@ class GameObjectType(BranchingObject):
 1. Are completable in O(1) time. (This may result in calls to mark_fast_deduction and thus further calls to fast_deduce. Overall, this should be completable in linear time based on the number of objects involved.)
 2. Have a good chance of finding impossible choices early. As choices are attempted, the fast deductions should be exploring the immediate consequences.
 
-This can be used for tasks that are required to generate the world, such as determining the conditions for reaching a vertex based on some choice once it's been made."""
+This can be used for tasks that are required to generate the world, such as determining the conditions for reaching a vertex based on some choice once it's been made.
+
+This method may raise LogicError."""
         pass
 
     def debug_print(self, indent=0):
@@ -632,20 +634,49 @@ This can be used for tasks that are required to generate the world, such as dete
 
 GameObject = GameObjectType()
 
+class LogicError(Exception):
+    """Indicates that the current game state has an error, such as a contradiction, or an unreachable goal.
+
+This must only be raised from certain expected methods, such as GameObject.fast_deduce."""
+
+class ChoiceStrategy(BranchingObject):
+    """A method for making a choice, randomly or otherwise"""
+
+    def __init__(self):
+        if type(self) == ChoiceStrategy:
+            raise TypeError("ChoiceStrategy is an abstract class")
+
+    def make_choice(self, choice):
+        """Makes the choice. Multiple iterations may be required before choice.value is known.
+
+This modifies choice and returns a token which can be passed to eliminate_choice.
+
+This must be overridden by subclasses, and does not need to be called by them."""
+        if type(self).make_choice == ChoiceStrategy.make_choice:
+            raise TypeError("ChoiceStrategy.make_choice must be overridden by subclasses")
+
+    def eliminate_choice(self, choice, token):
+        """Called with a token from make_choice when the choice leads to a contradiction. This modifies the choice object, or related objects, to prevent the same choice from being made and potentially allow deductions to be made.
+
+This must be overridden by subclasses, and does not need to be called by them."""
+        if type(self).eliminate_choice == ChoiceStrategy.eliminate_choice:
+            raise TypeError("ChoiceStrategy.eliminate_choice must be overridden by subclasses")    
+
 class ChoiceType(GameObjectType):
     """A choice that can be made at configuration time or randomly at seed generation time.
 
+Either default, strategy, or value must be set for all choice objects.
+
 Attributes:
-default = The default value for this choice, or None if there is no default. For right now, this has no effect.
+default = The default value for this choice, or None if there is no default.
+strategy = The strategy used to make this choice.
 known = Boolean indicating whether a value has been selected for this choice.
 
 Properties:
 value = The value selected for this choice if set. Accessing this is equivalent to the get_value and set_value methods.
-
-Todo:
-Add a concept of a "strategy" which can be used to make this choice randomly at seed generation time.
 """
     default = None
+    strategy = None
 
     _value = None
     known = False
@@ -673,6 +704,21 @@ Add a concept of a "strategy" which can be used to make this choice randomly at 
         return self._value
 
     value = property(get_value, set_value)
+
+    def make(self):
+        if self.known:
+            return
+        if self.strategy is not None:
+            return self.strategy.make_choice(self)
+        if self.default is not None:
+            self.set_value(self.default)
+        raise ValueError("%r must have a value, strategy, or default before make() is called." % self)
+    
+    def eliminate(self, token):
+        if self.strategy is None:
+            # FIXME: We probably should handle defaults in fast_deduce instead.
+            raise LogicError("%r has no strategy, and the default or assigned value led to a contradiction." % self)
+        self.strategy.eliminate_choice(self, token)
 
 Choice = ChoiceType()
 
@@ -746,7 +792,7 @@ class WorldType(GameObjectType):
         self.games[child.name] = child
 
     def deduce(self):
-        # TODO: expensive deductions, at random
+        # TODO: expensive deductions, at random, and boost probability if they are fruitful?
 
         while self.fast_deduction_objects:
             obj, _ = self.fast_deduction_objects.popitem()
@@ -769,6 +815,7 @@ class WorldType(GameObjectType):
         world.deduce()
 
         choices = []
+        choices_made = []
 
         while True:
             # Collect all choices and sort randomly
@@ -783,27 +830,31 @@ class WorldType(GameObjectType):
                 choices.sort(key=lambda x: self.rng('.'.join(x)+'choice_order').random())
                 if not choices:
                     break
-                
-
-            choice_path = choices.pop()
-            print(choice_path)
 
             while choices:
-                choice = world.object_from_path(choice_path)
-                print(choice)
+                choice_path = choices.pop()
 
-                # - save state
-                # - make the choice
-                # - push state and the choice we made
-                # - make deductions
-                # - if contradiction
-                #   + boost probability of any expensive deductions involved
-                #   + restore state and mark that the choice made is not possible
-                #   + make deductions
-                #   + while contradiction
-                #     - boost probability of any expensive deductions involved, AND the choice we attempted to make
-                #     - binary search to find the most recent state that holds up given the specific set of expensive deductions
-                #     - mark the recent state's corresponding choice as not possible
+                choice = world.object_from_path(choice_path)
+
+                saved_state = world.fork() # this does not invalidate our choice object
+
+                token = choice.make()
+
+                choices_made.push((saved_state, choice_path, token))
+
+                while True:
+                    try:
+                        world.deduce()
+                    except LogicError:
+                        raise Exception("TODO: implement backtracking")
+                        #   + restore state and mark that the choice made is not possible
+                        #   + make deductions
+                        #   + while contradiction
+                        #     - boost probability of any expensive deductions involved, AND the choice we attempted to make
+                        #     - binary search to find the most recent state that holds up given the specific set of expensive deductions
+                        #     - mark the recent state's corresponding choice as not possible
+                    else:
+                        break
 
                 raise NotImplementedError() # to prevent infinite loop for now
 
