@@ -614,13 +614,15 @@ class GameObjectType(BranchingObject):
     def get_world(self):
         obj = self
         while not isinstance(obj, WorldType):
+            if obj is None:
+                return None
             obj = obj.parent
         return obj
 
     def mark_fast_deduction(self):
         "Indicates that fast_deduce() should be called on this object"
         world = self.get_world()
-        if world is not None:
+        if world is not None and world.started_generation:
             world.fast_deduction_objects[self] = True
 
     def fast_deduce(self):
@@ -824,6 +826,8 @@ class RandomFactory:
         return random.Random(seed)
 
 class WorldType(GameObjectType):
+    started_generation = False
+
     def __ctor__(self, *args, **kwargs):
         GameObjectType.__ctor__(self, *args, **kwargs)
         self.games = {}
@@ -844,6 +848,8 @@ class WorldType(GameObjectType):
         self.rng = RandomFactory(seed)
 
         world = self.fork()
+
+        world.started_generation = True
 
         # Mark all objects as requiring deduction
         object_queue = [world]
@@ -947,8 +953,51 @@ value = A dictionary of connected ports to the number of connections to that por
         ChoiceType.__ctor__(self, *args, **kwargs)
         self.chosen_connections = {}
 
+    def _get_open_cache(self):
+        world = self.get_world()
+        if world is not None:
+            return world.getattr('_PortType_open_cache', (None, None))
+        return (None, None)
+
+    def _add_to_open_cache(self, by_type, by_compatible_type):
+        t = type(self)
+        while t is not ChoiceType:
+            if t not in by_type:
+                by_type[t] = BranchingOrderedDictionary()
+            by_type[t][self] = None
+            t = t.__bases__[0]
+        for t in self.compatible_types:
+            if t not in by_compatible_type:
+                by_compatible_type[t] = BranchingOrderedDictionary()
+            by_compatible_type[t][self] = None
+
+    def _build_open_cache(self):
+        by_type, by_compatible_type = self._get_open_cache()
+        if by_type is None:
+            world = self.get_world()
+            if world is None:
+                return
+            by_type, by_compatible_type = BranchingOrderedDictionary(), BranchingOrderedDictionary()
+            object_queue = [world]
+            while object_queue:
+                obj = object_queue.pop()
+                if isinstance(obj, PortType) and not obj.known:
+                    obj._add_to_open_cache(by_type, by_compatible_type)
+                object_queue.extend(obj.children.values())
+            world._PortType_open_cache = (by_type, by_compatible_type)
+
     def commit(self):
         self.value = self.chosen_connections
+
+    def on_set(self, value):
+        by_type, by_compatible_type = self._get_open_cache()
+        if by_type is not None:
+            t = type(self)
+            while t is not ChoiceType:
+                del by_type[t][self]
+                t = t.__bases__[0]
+            for t in self.compatible_types:
+                del by_compatible_type[t][self]
 
     def test_connect(self, other, count=1, test_other=True):
         """Raises ValueError if a connect() call with the same arguments would fail, otherwise does nothing."""
@@ -1004,7 +1053,8 @@ This will set the total number of connections to 1 (or another count if specifie
                 break
 
     def fast_deduce(self):
-        if sum(self.chosen_connections.values()) == self.maximum_connections:
+        self._build_open_cache()
+        if not self.known and sum(self.chosen_connections.values()) == self.maximum_connections:
             self.commit()
 
 PortType.compatible_types = (PortType,)
