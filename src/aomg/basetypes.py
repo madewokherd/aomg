@@ -661,7 +661,7 @@ applies_to = A tuple of choice types to which this strategy can be applied"""
     def make_choice(self, choice):
         """Makes the choice. Multiple iterations may be required before choice.value is known.
 
-This modifies choice and returns a token which can be passed to eliminate_choice.
+This modifies choice and returns a token which can be passed to eliminate_choice. Token must not be or reference a BranchingObject.
 
 This must be overridden by subclasses, and does not need to be called by them."""
         if type(self).make_choice == ChoiceStrategy.make_choice:
@@ -942,12 +942,16 @@ maximum_unique_connections = The maximum number of ports this port can connect t
 minimum_connections = The minimum number of ports this port must connect to, including multiple connections to the same port.
 minimum_unique_connections = The minimum number of ports this port must connect to, ignoring multiple connections to the same port.
 value = A dictionary of connected ports to the number of connections to that port.
+impossible_connections = A tuple of ports that are known to lead to a contradiction if connected to this one.
+commit_impossible = True if committing the current connections is known to lead to a contradiction.
 """
     can_self_connect = False
     maximum_connections = 1
     maximum_unique_connections = 1
     minimum_connections = 1
     minimum_unique_connections = 1
+    impossible_connections = ()
+    commit_impossible = False
 
     def __ctor__(self, *args, **kwargs):
         ChoiceType.__ctor__(self, *args, **kwargs)
@@ -986,6 +990,11 @@ value = A dictionary of connected ports to the number of connections to that por
                 object_queue.extend(obj.children.values())
             world._PortType_open_cache = (by_type, by_compatible_type)
 
+    def can_commit(self):
+        return (not self.commit_impossible and
+            len(self.chosen_connections) >= self.minimum_unique_connections and
+            sum(self.chosen_connections.values()) >= self.minimum_connections)
+
     def commit(self):
         self.value = self.chosen_connections
 
@@ -995,9 +1004,15 @@ value = A dictionary of connected ports to the number of connections to that por
             t = type(self)
             while t is not ChoiceType:
                 del by_type[t][self]
+                if not by_type[t]:
+                    for other in by_compatible_type.get(t, ()):
+                        other.mark_fast_deduction()
                 t = t.__bases__[0]
             for t in self.compatible_types:
                 del by_compatible_type[t][self]
+                if not by_compatible_type[t]:
+                    for other in by_type.get(t, ()):
+                        other.mark_fast_deduction()
 
     def test_connect(self, other, count=1, test_other=True):
         """Raises ValueError if a connect() call with the same arguments would fail, otherwise does nothing."""
@@ -1015,6 +1030,8 @@ value = A dictionary of connected ports to the number of connections to that por
             new_connections = sum(self.chosen_connections.values()) - (self.chosen_connections.get(other, 0)) + count
             if new_connections > self.maximum_connections:
                 raise ValueError("This would put the number of connections above self.maximum_connections")
+        if other in self.impossible_connections:
+            raise ValueError("This is known to cause a contradiction")
         if test_other:
             other.test_connect(self, count, False)
 
@@ -1030,10 +1047,16 @@ This will set the total number of connections to 1 (or another count if specifie
         else:
             self.chosen_connections[other] = count
             other.chosen_connections[self] = count
+        commit_impossible = False
+        self.mark_fast_deduction()
+        other.mark_fast_deduction()
 
     def multi_connect(self, other, count=1):
         "Add a specific number of connections to another port."
         self.connect(other, self.chosen_connections.get(other, 0)+count)
+
+    def test_multi_connect(self, other, count=1, test_other=True):
+        self.test_connect(other, self.chosen_connections.get(other, 0)+count, test_other)
 
     def disconnect(self, other, count=None):
         "Remove a connection to another port. If count is set to a number, that many connections will be removed, otherwise all connections will be removed."
@@ -1052,12 +1075,72 @@ This will set the total number of connections to 1 (or another count if specifie
                 self.connect(other, count=0)
                 break
 
+    def get_candidates(self):
+        "Returns a set of ports that might be possible to connect to this one."
+        by_type, by_compatible_type = self.get_world()._PortType_open_cache
+        type_candidates = set()
+        for compatible_type in self.compatible_types:
+            type_candidates.update(by_type.get(compatible_type, ()))
+        compatible_candidates = set()
+        t = type(self)
+        while t is not ChoiceType:
+            compatible_candidates.update(by_compatible_type.get(t, ()))
+            t = t.__bases__[0]
+        candidates = type_candidates & compatible_candidates
+        for v in self.impossible_connections:
+            candidates.discard(v)
+        while candidates:
+            v = candidates.pop()
+            try:
+                self.test_multi_connect(v, 1)
+            except ValueError:
+                continue
+            else:
+                candidates.add(v)
+                break
+        return candidates
+        
     def fast_deduce(self):
         self._build_open_cache()
         if not self.known and sum(self.chosen_connections.values()) == self.maximum_connections:
             self.commit()
+        elif not self.can_commit() and len(self.get_candidates()) == 0:
+            raise LogicError("%r cannot connect to any other open ports")
 
 PortType.compatible_types = (PortType,)
+
+class RandomPortStrategy(ChoiceStrategy):
+    applies_to = (PortType,)
+
+    def make_choice(self, choice):
+        rng = choice.get_world().rng
+        value = None
+        candidates = choice.get_candidates()
+        if choice.can_commit():
+            candidates.add('COMMIT')
+        while value is None:
+            value = min((v for v in candidates),
+                key = lambda v: rng(choice.get_string_path()+'\0'+v.get_string_path()+'\0RandomPortStrategy').random()
+                                if v != 'COMMIT'
+                                else rng(choice.get_string_path()+'\0COMMIT\0RandomPortStrategy'))
+            if value == 'COMMIT':
+                choice.commit()
+                return value
+            try:
+                choice.test_multi_connect(value, 1)
+            except ValueError:
+                candidates.discard(value)
+                value = None
+        choice.multi_connect(value, 1)
+        return value.get_string_path()
+
+    def eliminate_choice(self, choice, token):
+        if token == 'COMMIT':
+            choice.commit_impossible = True
+        else:
+            choice.impossible_connections += choice.object_from_path(token)
+
+PortType.strategy = RandomPortStrategy()
 
 Port = PortType()
 
@@ -1282,3 +1365,4 @@ if __name__ == '__main__':
     maze.map.Height.value = 10
 
     world.generate('test seed')
+    world.debug_print()
