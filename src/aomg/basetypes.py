@@ -732,6 +732,11 @@ value = The value selected for this choice if set. Accessing this is equivalent 
             raise LogicError("%r has no strategy, and the default or assigned value led to a contradiction." % self)
         self.strategy.eliminate_choice(self, token)
 
+    def debug_print(self, indent=0):
+        GameObjectType.debug_print(self, indent)
+        if self.known:
+            print(' '*(indent+2) + repr(self.value))
+
 Choice = ChoiceType()
 
 class NumericalChoiceType(ChoiceType):
@@ -880,9 +885,13 @@ class WorldType(GameObjectType):
                     break
 
             while choices:
-                choice_path = choices.pop()
+                choice_path = choices[-1]
 
                 choice = world.object_from_path(choice_path)
+
+                if choice.known:
+                    choices.pop(-1)
+                    continue
 
                 saved_state = world.fork() # this does not invalidate our choice object
 
@@ -903,6 +912,8 @@ class WorldType(GameObjectType):
                         #     - mark the recent state's corresponding choice as not possible
                     else:
                         break
+
+        return world
 
 
 World = WorldType()
@@ -1106,6 +1117,12 @@ This will set the total number of connections to 1 (or another count if specifie
             self.commit()
         elif not self.can_commit() and len(self.get_candidates()) == 0:
             raise LogicError("%r cannot connect to any other open ports")
+
+    def debug_print(self, indent=0):
+        GameObjectType.debug_print(self, indent)
+        if self.known:
+            for k, v in self.value.items():
+                print (' '*(indent+2) + repr(k) + (' * %s' if v != 1 else ''))
 
 PortType.compatible_types = (PortType,)
 
@@ -1364,5 +1381,4 @@ if __name__ == '__main__':
     maze.map.Width.value = 10
     maze.map.Height.value = 10
 
-    world.generate('test seed')
-    world.debug_print()
+    world.generate('test seed').debug_print()
