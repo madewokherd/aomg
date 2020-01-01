@@ -997,7 +997,12 @@ class AtLeastCondition(Condition):
         return AtLeastCondition(self.count, new_conditions)
 
     def __repr__(self):
-        return 'AtLeast(%s, %s)' % (repr(self.count), repr(self.conditions))
+        if self.count == 1:
+            return 'Any%s' % repr(self.conditions)
+        elif self.count == len(self.conditions):
+            return 'All%s' % repr(self.conditions)
+        else:
+            return 'AtLeast(%s, %s)' % (repr(self.count), repr(self.conditions))
 
 def _flatten_and_append_conditions(conditions, l):
     if isinstance(conditions, Condition):
