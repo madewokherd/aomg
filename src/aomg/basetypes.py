@@ -1047,17 +1047,36 @@ class VertexType(GameObjectType):
     """Anything a player can have or be denied access to. Once a player has access to a vertex, that is permanent and lasts the entire game.
 
 Attributes:
-condition = A necessary and sufficient condition to access this vertex. If None, this isn't known yet.
+condition = A necessary and sufficient condition to access this vertex.
 dependent_vertices = A set of vertices which may need to be updated when this one changes.
 is_known = A boolean value indicating whether the reachability of this vertex is known for the rest of the game.
 known_access = If is_known, whether the vertex is reachable.
-necessary_condition = A necessary condition to access this vertex. If this condition is known false, the vertex is known unreachable. This defaults to TrueCondition. For this value to transition from A to B, B must imply A.
-sufficient_condition = A sufficient condition to access this vertex. If this condition is known true, the vertex is reachable. This defaults to FalseCondition. For this value to transition from A to B, A must imply B.
+necessary_condition = A necessary condition to access this vertex. If this condition is known false, the vertex is known unreachable.
+sufficient_condition = A sufficient condition to access this vertex. If this condition is known true, the vertex is reachable.
 
 TODO: get_referenced_vertices, update_referenced_vertices
 deduction functions?
 """
+    condition = PlaceholderCondition("exact")
+    necessary_condition = PlaceholderCondition("necessary")
+    sufficient_condition = PlaceholderCondition("sufficient")
 
+    def substitute(self, name, condition):
+        self.condition = self.condition.substitute(name, condition)
+        self.necessary_condition = self.necessary_condition.substitute(name, condition)
+        self.sufficient_condition = self.sufficient_condition.substitute(name, condition)
+
+    is_known = False
+    known_access = None
+
+    def debug_print(self, indent=0):
+        GameObjectType.debug_print(self, indent)
+        if self.is_known:
+            print (' '*(indent+2) + "known " + self.known_access)
+        else:
+            print (' '*(indent+2) + "condition " + repr(self.condition))
+            print (' '*(indent+2) + "necessary_condition " + repr(self.necessary_condition))
+            print (' '*(indent+2) + "sufficient_condition " + repr(self.sufficient_condition))
 
 Vertex = VertexType()
 
@@ -1530,3 +1549,7 @@ if __name__ == '__main__':
     maze.map.Height.value = 10
 
     world.generate('test seed').debug_print()
+
+    v = VertexType()
+    v.substitute('necessary', TrueCondition)
+    v.debug_print()
