@@ -1002,6 +1002,8 @@ class AtLeastCondition(Condition):
 def _flatten_and_append_conditions(conditions, l):
     if isinstance(conditions, Condition):
         l.append(conditions)
+    elif isinstance(conditions, VertexType):
+        l.append(VertexCondition(conditions))
     else:
         for c in conditions:
             _flatten_and_append_conditions(c, l)
@@ -1020,10 +1022,14 @@ def AtLeast(count, *conditions):
 def Any(*conditions):
     return AtLeast(1, conditions)
 
+Or = Any
+
 def All(*conditions):
     l = []
     _flatten_and_append_conditions(conditions, l)
     return AtLeast(len(l), l)
+
+And = All
 
 class PlaceholderCondition(Condition):
     __slots__ = ['name']
@@ -1039,6 +1045,33 @@ class PlaceholderCondition(Condition):
 
     def __repr__(self):
         return 'PlaceholderCondition(%s)' % repr(self.name)
+
+class VertexCondition(Condition):
+    __slots__ = ['vertex']
+
+    def __init__(self, vertex):
+        self.vertex = vertex
+        Condition.__init__(self)
+
+    def is_known_true(self):
+        return self.vertex.is_known and self.vertex.known_access
+
+    def is_known_false(self):
+        return self.vertex.is_known and not self.vertex.known_access
+
+    def substitute(self, name, condition):
+        if name == self.vertex:
+            return condition
+        return self
+
+    def __repr__(self):
+        return 'VertexCondition(%s)' % repr(self.vertex)
+
+    def __translate_to_base__(self, branching_object):
+        return VertexCondition(branching_object.translate_to_base(self.vertex))
+
+    def __translate_from_base__(self, branching_object):
+        return VertexCondition(branching_object.translate_from_base(self.vertex))
 
 class VertexType(GameObjectType):
     """Anything a player can have or be denied access to. Once a player has access to a vertex, that is permanent and lasts the entire game.
@@ -1335,7 +1368,15 @@ access_any_state = A vertex indicating that the player can access this position 
     def get_access_any_state(self):
         if self._access_any_state is None:
             self._access_any_state = PositionVertexType()
-            self._access_any_state.condition = Any(PlaceholderCondition(x.name) for x in self.children.values() if isinstance(x, MovementPortType))
+            ports = []
+            for x in self.children.values():
+                if isinstance(x, MovementPortType):
+                    if x.known:
+                        can_access_exit = Any(And(y.can_exit, y.parent.access_any_state) for y in x.value.keys())
+                    else:
+                        can_access_exit = PlaceholderCondition(x.name)
+                    ports.append(All(x.can_enter, can_access_exit))
+            self._access_any_state.condition = Any(ports)
         return self._access_any_state
 
     access_any_state = property(get_access_any_state)
