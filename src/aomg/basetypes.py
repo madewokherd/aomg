@@ -933,20 +933,34 @@ class Condition:
     def is_known(self):
         return self.is_known_true() or self.is_known_false()
 
+    def substitute(self, name, condition):
+        return self
+
 class _TrueConditionType(Condition):
     def is_known_true(self):
         return True
+
+    def __repr__(self):
+        return "TrueCondition"
+
 TrueCondition = _TrueConditionType()
 
 class _FalseConditionType(Condition):
     def is_known_false(self):
         return True
+
+    def __repr__(self):
+        return "FalseCondition"
+
 FalseCondition = _FalseConditionType()
 
 class AtLeastCondition(Condition):
+    __slots__ = ['count', 'conditions']
+
     def __init__(self, count, conditions):
         self.count = count
         self.conditions = conditions
+        Condition.__init__(self)
 
     def is_known_true(self):
         known_true = 0
@@ -973,19 +987,61 @@ class AtLeastCondition(Condition):
                 return False
         return False
 
-def to_condition(x):
-    if isinstance(x, Condition):
-        return x
-    raise NotImplementedError()
+    def __translate_to_base__(self, branching_object):
+        return AtLeastCondition(self.count, branching_object.translate_to_base(self.conditions))
 
-def AtLeast(count, conditions):
+    def __translate_from_base__(self, branching_object):
+        return AtLeastCondition(self.count, branching_object.translate_from_base(self.conditions))
+
+    def substitute(self, name, condition):
+        new_conditions = tuple(x.substitute(name, condition) for x in self.conditions)
+        if new_conditions == self.conditions:
+            return self
+        return AtLeastCondition(self.count, new_conditions)
+
+    def __repr__(self):
+        return 'AtLeast(%s, %s)' % (repr(self.count), repr(self.conditions))
+
+def _flatten_and_append_conditions(conditions, l):
+    if isinstance(conditions, Condition):
+        l.append(conditions)
+    else:
+        for c in conditions:
+            _flatten_and_append_conditions(c, l)
+
+def AtLeast(count, *conditions):
     if count <= 0:
         return TrueCondition
-    conditions = tuple(to_condition(x) for x in conditions)
+    l = []
+    _flatten_and_append_conditions(conditions, l)
+    conditions = tuple(l)
     if count > len(conditions):
         return FalseCondition
 
     return AtLeastCondition(count, conditions)
+
+def Any(*conditions):
+    return AtLeast(1, conditions)
+
+def All(*conditions):
+    l = []
+    _flatten_and_append_conditions(conditions, l)
+    return AtLeast(len(l), l)
+
+class PlaceholderCondition(Condition):
+    __slots__ = ['name']
+
+    def __init__(self, name):
+        self.name = name
+        Condition.__init__(self)
+
+    def substitute(self, name, condition):
+        if name == self.name:
+            return condition
+        return self
+
+    def __repr__(self):
+        return 'PlaceholderCondition(%s)' % repr(self.name)
 
 class VertexType(GameObjectType):
     """Anything a player can have or be denied access to. Once a player has access to a vertex, that is permanent and lasts the entire game.
@@ -1441,6 +1497,12 @@ if __name__ == '__main__':
 
     assert AtLeast(1, (FalseCondition, FalseCondition)).is_known_false()
     assert AtLeast(2, (TrueCondition, TrueCondition)).is_known_true()
+
+    testcondition = AtLeast(1, (PlaceholderCondition("one"), FalseCondition, PlaceholderCondition("three")))
+    assert testcondition.substitute("one", TrueCondition).is_known_true()
+    assert not testcondition.substitute("one", FalseCondition).is_known_false()
+
+    assert testcondition.substitute("bogus", TrueCondition) is testcondition
 
     # MazeGame tests
     world = World()
