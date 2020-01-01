@@ -34,9 +34,6 @@
 import hashlib
 import random
 
-class Condition:
-    pass
-
 class FrozenDict(dict):
     def __setitem__(self, *args, **kwargs):
         raise TypeError("cannot modify a FrozenDict")
@@ -1309,10 +1306,17 @@ can_exit = Condition indicating whether it's possible to exit self.parent throug
 enter_transitions = List of state transitions and constraints triggered when entering through this port.
 exit_transitions = List of state transitions and constraints triggered when exiting through this port.
 """
+    can_enter = TrueCondition
+    can_exit = TrueCondition
+    enter_transitions = ()
+    exit_transitions = ()
 
 MovementPortType.compatible_types = (MovementPortType,)
 
 MovementPort = MovementPortType()
+
+class PositionVertexType(VertexType):
+    pass
 
 class PositionType(GameObjectType):
     '''A place that a player can "be". This could be a room, a door, or a position in space.
@@ -1322,10 +1326,19 @@ Attributes:
 transient = Boolean value. If True, the player cannot actually *be* here but can pass through here to connect to other areas. An example would be a map screen which can be used in a pause menu to teleport.
 
 Properties:
-access_any_state = A vertex indicating that the player can access this position in at least one possible state.
-ports = A list of port objects which can be used to exit or enter this position. To modify this list, assign a PortType object as an attribute or using the add_child/remove_child methods.'''
+access_any_state = A vertex indicating that the player can access this position in at least one possible state.'''
 
     transient = False
+
+    _access_any_state = None
+
+    def get_access_any_state(self):
+        if self._access_any_state is None:
+            self._access_any_state = PositionVertexType()
+            self._access_any_state.condition = Any(PlaceholderCondition(x.name) for x in self.children.values() if isinstance(x, MovementPortType))
+        return self._access_any_state
+
+    access_any_state = property(get_access_any_state)
 
 Position = PositionType()
 
@@ -1548,7 +1561,10 @@ if __name__ == '__main__':
     maze.map.Width.value = 10
     maze.map.Height.value = 10
 
-    world.generate('test seed').debug_print()
+    w = world.generate('test seed')
+    w.debug_print()
+
+    w.object_from_path(('MazeGame', 'map', '(2, 2)'), relative=True).access_any_state.debug_print()
 
     v = VertexType()
     v.substitute('necessary', TrueCondition)
