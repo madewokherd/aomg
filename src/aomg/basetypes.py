@@ -923,6 +923,70 @@ class GameType(GameObjectType):
 
 Game = GameType()
 
+class Condition:
+    def is_known_true(self):
+        return False
+
+    def is_known_false(self):
+        return False
+
+    def is_known(self):
+        return self.is_known_true() or self.is_known_false()
+
+class _TrueConditionType(Condition):
+    def is_known_true(self):
+        return True
+TrueCondition = _TrueConditionType()
+
+class _FalseConditionType(Condition):
+    def is_known_false(self):
+        return True
+FalseCondition = _FalseConditionType()
+
+class AtLeastCondition(Condition):
+    def __init__(self, count, conditions):
+        self.count = count
+        self.conditions = conditions
+
+    def is_known_true(self):
+        known_true = 0
+        remaining = len(self.conditions)
+        for condition in self.conditions:
+            if condition.is_known_true():
+                known_true += 1
+                if known_true >= self.count:
+                    return True
+            remaining -= 1
+            if known_true + remaining < self.count:
+                return False
+        return False
+
+    def is_known_false(self):
+        remaining = possibly_true = len(self.conditions)
+        for condition in self.conditions:
+            if condition.is_known_false():
+                possibly_true -= 1
+                if possibly_true < self.count:
+                    return True
+            remaining -= 1
+            if possibly_true - remaining >= self.count:
+                return False
+        return False
+
+def to_condition(x):
+    if isinstance(x, Condition):
+        return x
+    raise NotImplementedError()
+
+def AtLeast(count, conditions):
+    if count <= 0:
+        return TrueCondition
+    conditions = tuple(to_condition(x) for x in conditions)
+    if count > len(conditions):
+        return FalseCondition
+
+    return AtLeastCondition(count, conditions)
+
 class VertexType(GameObjectType):
     """Anything a player can have or be denied access to. Once a player has access to a vertex, that is permanent and lasts the entire game.
 
@@ -1355,6 +1419,28 @@ if __name__ == '__main__':
     del d2[3]
     assert list(d2.items()) == []
     assert not d2
+
+    # Condition tests
+    assert TrueCondition.is_known_true()
+    assert FalseCondition.is_known_false()
+
+    assert not TrueCondition.is_known_false()
+    assert not FalseCondition.is_known_true()
+
+    assert AtLeast(0, ()) is TrueCondition
+    assert AtLeast(1, ()) is FalseCondition
+
+    assert AtLeast(1, (FalseCondition, Condition(), TrueCondition)).is_known_true()
+    assert not AtLeast(1, (FalseCondition, Condition(), TrueCondition)).is_known_false()
+
+    assert not AtLeast(2, (FalseCondition, Condition(), TrueCondition)).is_known_true()
+    assert not AtLeast(2, (FalseCondition, Condition(), TrueCondition)).is_known_false()
+
+    assert not AtLeast(3, (FalseCondition, Condition(), TrueCondition)).is_known_true()
+    assert AtLeast(3, (FalseCondition, Condition(), TrueCondition)).is_known_false()
+
+    assert AtLeast(1, (FalseCondition, FalseCondition)).is_known_false()
+    assert AtLeast(2, (TrueCondition, TrueCondition)).is_known_true()
 
     # MazeGame tests
     world = World()
