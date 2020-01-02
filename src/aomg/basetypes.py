@@ -867,6 +867,7 @@ class WorldType(GameObjectType):
         GameObjectType.__ctor__(self, *args, **kwargs)
         self.games = {}
         self.fast_deduction_objects = {}
+        self.start_position = StartingPositionType()
 
     def add_game(self, child):
         self.add_child(child)
@@ -945,8 +946,6 @@ class WorldType(GameObjectType):
 
         return world
 
-
-World = WorldType()
 
 class GameType(GameObjectType):
     pass
@@ -1424,7 +1423,7 @@ class RandomPortStrategy(ChoiceStrategy):
             value = min((v for v in candidates),
                 key = lambda v: rng(choice.get_string_path()+'\0'+v.get_string_path()+'\0RandomPortStrategy').random()
                                 if v != 'COMMIT'
-                                else rng(choice.get_string_path()+'\0COMMIT\0RandomPortStrategy'))
+                                else rng(choice.get_string_path()+'\0COMMIT\0RandomPortStrategy').random())
             if value == 'COMMIT':
                 choice.commit()
                 return value
@@ -1454,11 +1453,13 @@ can_enter = Condition indicating whether it's possible to enter self.parent thro
 can_exit = Condition indicating whether it's possible to exit self.parent through a connected port.
 enter_transitions = List of state transitions and constraints triggered when entering through this port.
 exit_transitions = List of state transitions and constraints triggered when exiting through this port.
+can_start = Game can start here.
 """
     can_enter = TrueCondition
     can_exit = TrueCondition
     enter_transitions = ()
     exit_transitions = ()
+    can_start = True
 
 MovementPortType.compatible_types = (MovementPortType,)
 
@@ -1498,6 +1499,26 @@ access_any_state = A vertex indicating that the player can access this position 
     access_any_state = property(get_access_any_state)
 
 Position = PositionType()
+
+class StartingPositionType(PositionType):
+    """Links to positions where the player can start. Generally, World.start_position should be used instead of instantiating this."""
+
+    def __ctor__(self, *args, **kwargs):
+        PositionType.__ctor__(self, *args, **kwargs)
+        self.start_port = MovementPortType(
+            maximum_connections = None,
+            maximum_unique_connections = None,
+            minimum_connections = 0,
+            minimum_unique_connections = 0)
+
+    access_any_state = TrueCondition
+
+    def test_connect(self, other, count=1, test_other=True):
+        if not other.can_start:
+            raise ValueError("cannot start at the other port")
+        return PositionType.test_connect(self, other, count, test_other)
+
+World = WorldType()
 
 class GridMapType(GameObjectType):
     def __ctor__(self, *args, **kwargs):
