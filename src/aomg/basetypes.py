@@ -794,6 +794,39 @@ TODO: Track dependent vertices?"""
             else:
                 raise ValueError("%r has too many impossible values")
 
+    def Is(self, *values):
+        value_set = set()
+        for v in values:
+            if isinstance(v, str):
+                if v not in self.values:
+                    raise ValueError("%s is not a possible value for this enum" % v)
+                value_set.add(v)
+            else:
+                for v in v:
+                    if not isinstance(v, str):
+                        raise ValueError("arguments to EnumChoice.Is must be a string or iterable of strings")
+                    if v not in self.values:
+                        raise ValueError("%s is not a possible value for this enum" % v)
+                    value_set.add(v)
+        return EnumCondition(self, frozenset(value_set))
+
+    def IsNot(self, *values):
+        value_set = set()
+        for v in values:
+            if isinstance(v, str):
+                if v not in self.values:
+                    raise ValueError("%s is not a possible value for this enum" % v)
+                value_set.add(v)
+            else:
+                for v in v:
+                    if not isinstance(v, str):
+                        raise ValueError("arguments to EnumChoice.Is must be a string or iterable of strings")
+                    if v not in self.values:
+                        raise ValueError("%s is not a possible value for this enum" % v)
+                    value_set.add(v)
+        return EnumCondition(self, frozenset(self.values) - value_set)
+    
+
 EnumEvenDistribution.applies_to = (EnumChoiceType,)
 
 EnumChoiceType.strategy = EnumEvenDistribution()
@@ -1117,6 +1150,44 @@ class VertexCondition(Condition):
 
     def __translate_from_base__(self, branching_object):
         return VertexCondition(branching_object.translate_from_base(self.vertex))
+
+class EnumCondition(Condition):
+    __slots__ = ['enum', 'values']
+
+    def __init__(self, enum, values):
+        self.enum = enum
+        self.values = values
+        Condition.__init__(self)
+
+    def is_known_true(self):
+        return self.enum.known and self.enum.value in self.values
+
+    def is_known_false(self):
+        return self.enum.known and self.enum.value not in self.values
+
+    def __repr__(self):
+        return 'EnumCondition(%s, %s)' % (repr(self.enum), repr(self.values))
+
+    def __translate_to_base__(self, branching_object):
+        return EnumCondition(branching_object.translate_to_base(self.enum), self.values)
+
+    def __translate_from_base__(self, branching_object):
+        return EnumCondition(branching_object.translate_from_base(self.enum), self.values)
+
+    def simplify(self):
+        if self.enum.known:
+            return TrueCondition if self.enum.value in self.values else FalseCondition
+        values_to_eliminate = set()
+        for value in self.values:
+            if value in self.enum.impossible_values:
+                values_to_eliminate.add(value)
+        if values_to_eliminate:
+            new_values = self.values - values_to_eliminate
+            if not new_values:
+                return FalseCondition
+            return EnumCondition(self.enum, new_values)
+        return self
+
 
 class VertexType(GameObjectType):
     """Anything a player can have or be denied access to. Once a player has access to a vertex, that is permanent and lasts the entire game.
@@ -1501,12 +1572,16 @@ class MazeObstacleChoiceType(EnumChoiceType):
 
 class MazeMap(GridMapType):
     def connect_cells_horizontal(self, west, east):
+        obstacle = MazeObstacleChoiceType(west, east)
+        east.West.can_enter = east.West.can_exit = obstacle.Is("Nothing")
+        self.setattr('EastObstacle' + str((west.x, west.y)), obstacle)
         GridMapType.connect_cells_horizontal(self, west, east)
-        self.setattr('EastObstacle' + str((west.x, west.y)), MazeObstacleChoiceType(west, east))
 
     def connect_cells_vertical(self, north, south):
+        obstacle = MazeObstacleChoiceType(north, south)
+        south.North.can_enter = south.North.can_exit = obstacle.Is("Nothing")
+        self.setattr('SouthObstacle' + str((north.x, north.y)), obstacle)
         GridMapType.connect_cells_vertical(self, north, south)
-        self.setattr('SouthObstacle' + str((north.x, north.y)), MazeObstacleChoiceType(north, south))
 
     def connect_cell_edge(self, cell, name):
         GridMapType.connect_cell_edge(self, cell, name)
@@ -1650,8 +1725,8 @@ if __name__ == '__main__':
     w = world.generate('test seed')
     w.debug_print()
 
-    w.object_from_path(('MazeGame', 'map', '(2, 2)'), relative=True).access_any_state.debug_print()
-    print(w.object_from_path(('MazeGame', 'map', '(2, 2)'), relative=True).access_any_state.condition.simplify())
+    w.object_from_path(('MazeGame', 'map', '(1, 1)'), relative=True).access_any_state.debug_print()
+    print(w.object_from_path(('MazeGame', 'map', '(1, 1)'), relative=True).access_any_state.condition.simplify())
 
     v = VertexType()
     v.substitute('necessary', TrueCondition)
