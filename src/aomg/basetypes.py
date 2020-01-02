@@ -652,6 +652,7 @@ applies_to = A tuple of choice types to which this strategy can be applied"""
     applies_to = ()
 
     def __init__(self):
+        BranchingObject.__init__(self)
         if type(self) == ChoiceStrategy:
             raise TypeError("ChoiceStrategy is an abstract class")
 
@@ -1413,11 +1414,18 @@ PortType.compatible_types = (PortType,)
 class RandomPortStrategy(ChoiceStrategy):
     applies_to = (PortType,)
 
+    def __init__(self, conservative=False):
+        ChoiceStrategy.__init__(self)
+        self.conservative = conservative
+
     def make_choice(self, choice):
         rng = choice.get_world().rng
         value = None
         candidates = choice.get_candidates()
         if choice.can_commit():
+            if self.conservative:
+                choice.commit()
+                return 'COMMIT'
             candidates.add('COMMIT')
         while value is None:
             value = min((v for v in candidates),
@@ -1509,7 +1517,8 @@ class StartingPositionType(PositionType):
             maximum_connections = None,
             maximum_unique_connections = None,
             minimum_connections = 0,
-            minimum_unique_connections = 0)
+            minimum_unique_connections = 0,
+            strategy=RandomPortStrategy(conservative=True))
 
     access_any_state = TrueCondition
 
