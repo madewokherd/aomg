@@ -933,12 +933,23 @@ class Condition:
     def substitute(self, name, condition):
         return self
 
+    def simplify(self):
+        if self.is_known_true():
+            return TrueCondition
+        elif self.is_known_false():
+            return FalseCondition
+        else:
+            return self
+
 class _TrueConditionType(Condition):
     def is_known_true(self):
         return True
 
     def __repr__(self):
         return "TrueCondition"
+
+    def simplify(self):
+        return self
 
 TrueCondition = _TrueConditionType()
 
@@ -948,6 +959,9 @@ class _FalseConditionType(Condition):
 
     def __repr__(self):
         return "FalseCondition"
+
+    def simplify(self):
+        return self
 
 FalseCondition = _FalseConditionType()
 
@@ -1003,6 +1017,32 @@ class AtLeastCondition(Condition):
             return 'All%s' % repr(self.conditions)
         else:
             return 'AtLeast(%s, %s)' % (repr(self.count), repr(self.conditions))
+
+    def simplify(self):
+        conditions = []
+        changed = False
+        trues = 0
+        falses = 0
+        for c in self.conditions:
+            s = c.simplify()
+            if s is TrueCondition:
+                trues += 1
+                changed = True
+            elif s is FalseCondition:
+                falses += 1
+                changed = True
+            else:
+                conditions.append(s)
+                if s is not c:
+                    changed = True
+
+        if changed:
+            new_count = self.count - trues
+            if new_count == 1 == len(conditions):
+                return conditions[0]
+            return AtLeast(new_count, conditions)
+
+        return self
 
 def _flatten_and_append_conditions(conditions, l):
     if isinstance(conditions, Condition):
@@ -1611,6 +1651,7 @@ if __name__ == '__main__':
     w.debug_print()
 
     w.object_from_path(('MazeGame', 'map', '(2, 2)'), relative=True).access_any_state.debug_print()
+    print(w.object_from_path(('MazeGame', 'map', '(2, 2)'), relative=True).access_any_state.condition.simplify())
 
     v = VertexType()
     v.substitute('necessary', TrueCondition)
