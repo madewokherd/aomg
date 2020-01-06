@@ -1226,6 +1226,13 @@ deduction functions?
 
 Vertex = VertexType()
 
+class GoalType(VertexType):
+    def __ctor__(self, *args, **kwargs):
+        VertexType.__ctor__(self, *args, **kwargs)
+        self.Configuration = EnumChoiceType(values=('Required', 'Optional', 'Ignore'))
+
+Goal = GoalType()
+
 class PortType(ChoiceType):
     """A type of object that links a game object to a different game object. Ports work by linking to other ports. Once linked, the parent object will be notified via the on_choice method.
 
@@ -1620,10 +1627,22 @@ class MazeMap(GridMapType):
         except AttributeError:
             pass
 
+    def on_choice(self, choice):
+        GridMapType.on_choice(self, choice)
+        if (choice in (self.Width, self.Height) and
+            self.Width.known and self.Height.known):
+            positions = []
+            for child in self.children.values():
+                if isinstance(child, PositionType):
+                    positions.append(child)
+            self.parent.AllPositions.condition = All(x.access_any_state for x in positions)
+
 class MazeGame(GameType):
     def __ctor__(self, *args, **kwargs):
         GameType.__ctor__(self, *args, **kwargs)
         self.map = MazeMap()
+        self.AllPositions = GoalType()
+        self.AllPositions.Configuration.default = "Optional"
 
 # TODO: move tests
 if __name__ == '__main__':
