@@ -616,6 +616,13 @@ class GameObjectType(BranchingObject):
             obj = obj.parent
         return obj
 
+    def descendents_by_type(self, t):
+        for child in self.children.values():
+            if isinstance(child, t):
+                yield child
+            for descendent in child.descendents_by_type(t):
+                yield descendent
+
     def mark_fast_deduction(self):
         "Indicates that fast_deduce() should be called on this object"
         world = self.get_world()
@@ -869,6 +876,8 @@ class WorldType(GameObjectType):
         self.games = {}
         self.fast_deduction_objects = {}
         self.start_position = StartingPositionType()
+        self.RequiredGoals = RequiredGoalsVertex()
+        self.OptionalGoals = OptionalGoalsVertex()
 
     def add_game(self, child):
         self.add_child(child)
@@ -1204,8 +1213,8 @@ TODO: get_referenced_vertices, update_referenced_vertices
 deduction functions?
 """
     condition = PlaceholderCondition("exact")
-    necessary_condition = PlaceholderCondition("necessary")
-    sufficient_condition = PlaceholderCondition("sufficient")
+    necessary_condition = AtLeastCondition(2, (condition, PlaceholderCondition("necessary")))
+    sufficient_condition = AtLeastCondition(1, (condition, PlaceholderCondition("sufficient")))
 
     def substitute(self, name, condition):
         self.condition = self.condition.substitute(name, condition)
@@ -1232,6 +1241,24 @@ class GoalType(VertexType):
         self.Configuration = EnumChoiceType(values=('Required', 'Optional', 'Ignore'))
 
 Goal = GoalType()
+
+class RequiredGoalsVertex(VertexType):
+    def fast_deduce(self):
+        if self.condition == VertexType.condition:
+            conditions = []
+            for goal in self.get_world().descendents_by_type(GoalType):
+                conditions.append(Or(goal.Configuration.IsNot("Required"), goal))
+            self.substitute("exact", All(conditions).simplify())
+        VertexType.fast_deduce(self)
+
+class OptionalGoalsVertex(VertexType):
+    def fast_deduce(self):
+        if self.condition == VertexType.condition:
+            conditions = []
+            for goal in self.get_world().descendents_by_type(GoalType):
+                conditions.append(Or(goal.Configuration.Is("Ignore"), goal))
+            self.substitute("exact", All(conditions).simplify())
+        VertexType.fast_deduce(self)
 
 class PortType(ChoiceType):
     """A type of object that links a game object to a different game object. Ports work by linking to other ports. Once linked, the parent object will be notified via the on_choice method.
