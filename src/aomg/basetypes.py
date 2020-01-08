@@ -1080,8 +1080,6 @@ class AtLeastCondition(Condition):
 
         if changed:
             new_count = self.count - trues
-            if new_count == 1 == len(conditions):
-                return conditions[0]
             return AtLeast(new_count, conditions)
 
         return self
@@ -1103,6 +1101,9 @@ def AtLeast(count, *conditions):
     conditions = tuple(l)
     if count > len(conditions):
         return FalseCondition
+
+    if count == 1 == len(conditions):
+        return conditions[0]
 
     return AtLeastCondition(count, conditions)
 
