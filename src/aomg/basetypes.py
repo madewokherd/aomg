@@ -682,10 +682,9 @@ This must be overridden by subclasses, and does not need to be called by them.""
 class ChoiceType(GameObjectType):
     """A choice that can be made at configuration time or randomly at seed generation time.
 
-Either default, strategy, or value must be set for all choice objects.
 
 Attributes:
-default = The default value for this choice, or None if there is no default.
+default = The default value or strategy for this choice, must be set.
 strategy = The strategy used to make this choice.
 known = Boolean indicating whether a value has been selected for this choice.
 
@@ -728,7 +727,11 @@ value = The value selected for this choice if set. Accessing this is equivalent 
         if self.strategy is not None:
             return self.strategy.make_choice(self)
         if self.default is not None:
+            if isinstance(self.default, ChoiceStrategy):
+                self.strategy = self.default
+                return self.strategy.make_choice(self)
             self.set_value(self.default)
+            return
         raise ValueError("%r must have a value, strategy, or default before make() is called." % self)
     
     def eliminate(self, token):
@@ -837,7 +840,7 @@ TODO: Track dependent vertices?"""
 
 EnumEvenDistribution.applies_to = (EnumChoiceType,)
 
-EnumChoiceType.strategy = EnumEvenDistribution()
+EnumChoiceType.default = EnumEvenDistribution()
 
 EnumChoice = EnumChoiceType()
 
@@ -1484,7 +1487,7 @@ class RandomPortStrategy(ChoiceStrategy):
         else:
             choice.impossible_connections += choice.object_from_path(token)
 
-PortType.strategy = RandomPortStrategy()
+PortType.default = RandomPortStrategy()
 
 Port = PortType()
 
@@ -1553,7 +1556,7 @@ class StartingPositionType(PositionType):
             maximum_unique_connections = None,
             minimum_connections = 0,
             minimum_unique_connections = 0,
-            strategy=RandomPortStrategy(conservative=True))
+            default=RandomPortStrategy(conservative=True))
 
     access_any_state = TrueCondition
 
