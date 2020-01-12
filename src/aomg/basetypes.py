@@ -1206,36 +1206,80 @@ class VertexType(GameObjectType):
     """Anything a player can have or be denied access to. Once a player has access to a vertex, that is permanent and lasts the entire game.
 
 Attributes:
-condition = A necessary and sufficient condition to access this vertex.
+condition = A necessary and sufficient condition to access this vertex. Defaults to PlaceholderCondition("exact"). This cannot be assigned after fast_deduce is called for this vertex, but it can be modified with substitute().
+condition_fixed = True if fast_deduce has been called and condition cannot be assigned.
 dependent_vertices = A set of vertices which may need to be updated when this one changes.
 is_known = A boolean value indicating whether the reachability of this vertex is known for the rest of the game.
 known_access = If is_known, whether the vertex is reachable.
-necessary_condition = A necessary condition to access this vertex. If this condition is known false, the vertex is known unreachable.
-sufficient_condition = A sufficient condition to access this vertex. If this condition is known true, the vertex is reachable.
+necessary_condition = A necessary condition to access this vertex. If this condition is known false, the vertex is known unreachable. Defaults to PlaceholderCondition("necessary")
+sufficient_condition = A sufficient condition to access this vertex. If this condition is known true, the vertex is reachable. Defaults to PlaceholderCondition("sufficient")
 
 TODO: get_referenced_vertices, update_referenced_vertices
 deduction functions?
 """
-    condition = PlaceholderCondition("exact")
-    necessary_condition = AtLeastCondition(2, (condition, PlaceholderCondition("necessary")))
-    sufficient_condition = AtLeastCondition(1, (condition, PlaceholderCondition("sufficient")))
+    _condition = PlaceholderCondition("exact")
+    #_necessary_condition = AtLeastCondition(2, (condition, PlaceholderCondition("necessary")))
+    #_sufficient_condition = AtLeastCondition(1, (condition, PlaceholderCondition("sufficient")))
+    _necessary_condition = PlaceholderCondition("necessary")
+    _sufficient_condition = PlaceholderCondition("sufficient")
+    _condition_fixed = False
+
+    def _get_condition_fixed(self):
+        return self._condition_fixed
+
+    condition_fixed = property(_get_condition_fixed)
 
     def substitute(self, name, condition):
-        self.condition = self.condition.substitute(name, condition)
-        self.necessary_condition = self.necessary_condition.substitute(name, condition)
-        self.sufficient_condition = self.sufficient_condition.substitute(name, condition)
+        """Replaces PlaceholderCondition("name") in condition, necessary_condition, and sufficient_condition. Returns a boolean indicating whether anything changed."""
+        old_condition = self._condition
+        old_necessary_condition = self._necessary_condition
+        old_sufficient_condition = self._sufficient_condition
+        self._condition = new_condition = self._condition.substitute(name, condition)
+        self._necessary_condition = new_necessary_condition = self._necessary_condition.substitute(name, condition)
+        self._sufficient_condition = new_sufficient_condition = self._sufficient_condition.substitute(name, condition)
+        return old_condition is not new_condition or old_necessary_condition is not new_necessary_condition or old_sufficient_condition is not new_sufficient_condition
+
+    def _get_condition(self):
+        return self._condition
+
+    def _set_condition(self, condition):
+        if self._condition_fixed and self._condition is not VertexType._condition:
+            raise Exception("condition cannot be set after fast_deduce was first called, use substitute() method")
+        self._condition = condition
+
+    condition = property(_get_condition, _set_condition)
+
+    def _get_necessary(self):
+        return self._necessary_condition
+
+    def _set_necessary(self, condition):
+        self._necessary_condition = condition
+
+    necessary_condition = property(_get_necessary, _set_necessary)
+
+    def _get_sufficient(self):
+        return self._sufficient_condition
+
+    def _set_sufficient(self, condition):
+        self._sufficient_condition = condition
+
+    sufficient_condition = property(_get_sufficient, _set_sufficient)
 
     is_known = False
     known_access = None
+
+    def fast_deduce(self):
+        self._condition_fixed = True
+        GameObjectType.fast_deduce(self)
 
     def debug_print(self, indent=0):
         GameObjectType.debug_print(self, indent)
         if self.is_known:
             print (' '*(indent+2) + "known " + self.known_access)
         else:
-            print (' '*(indent+2) + "condition " + repr(self.condition))
-            print (' '*(indent+2) + "necessary_condition " + repr(self.necessary_condition))
-            print (' '*(indent+2) + "sufficient_condition " + repr(self.sufficient_condition))
+            print (' '*(indent+2) + "condition " + repr(self._condition))
+            print (' '*(indent+2) + "necessary_condition " + repr(self._necessary_condition))
+            print (' '*(indent+2) + "sufficient_condition " + repr(self._sufficient_condition))
 
 Vertex = VertexType()
 
