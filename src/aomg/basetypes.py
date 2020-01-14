@@ -1238,6 +1238,8 @@ class EnumCondition(Condition):
             return EnumCondition(self.enum, new_values)
         return self
 
+    def collect_dependencies(self):
+        return {self.enum,}
 
 class VertexType(GameObjectType):
     """Anything a player can have or be denied access to. Once a player has access to a vertex, that is permanent and lasts the entire game.
