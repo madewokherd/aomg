@@ -511,6 +511,8 @@ class GameObjectType(BranchingObject):
 
     def __ctor__(self, *args, **kwargs):
         self.children = {}
+        self._dependents = {} # other game objects that need fast_deduce to be called when this one is updated
+        self._dependencies = {}
         BranchingObject.__ctor__(self, *args, **kwargs)
 
     def _get_name(self):
@@ -639,8 +641,29 @@ This can be used for tasks that are required to generate the world, such as dete
 This method may raise LogicError."""
         pass
 
+    def updated(self):
+        """Queues a fast_deduce() call for any game object that depends on this one, and updates the list of objects this one depends on by calling collect_dependencies()."""
+        for x in self._dependents:
+            x.mark_fast_deduction()
+        prev_dependencies = set(self._dependencies)
+        new_dependencies = set(self.collect_dependencies())
+
+        for obj in prev_dependencies - new_dependencies:
+            del self._dependencies[obj]
+            del obj._dependents[self]
+        for obj in new_dependencies - prev_dependencies:
+            self._dependencies[obj] = None
+            obj._dependents[self] = None
+
+    def collect_dependencies(self):
+        return set()
+
     def debug_print(self, indent=0):
         print(' '*indent+self.name, self)
+        if self._dependents:
+            print(' '*(indent+2)+'dependents' + repr(list(self._dependents.keys())))
+        if self._dependencies:
+            print(' '*(indent+2)+'dependencies' + repr(list(self._dependencies.keys())))
         for child in self.children.values():
             child.debug_print(indent+2)
 
@@ -713,6 +736,7 @@ value = The value selected for this choice if set. Accessing this is equivalent 
         self.on_set(value)
         if self.parent is not None:
             self.parent.on_choice(self)
+        self.updated()
 
     def get_value(self):
         if not self.known:
@@ -804,6 +828,7 @@ TODO: Track dependent vertices?"""
                 raise LogicError("All potential values for %r lead to a contradiction" % self)
             else:
                 raise ValueError("%r has too many impossible values")
+        ChoiceType.fast_deduce(self)
 
     def Is(self, *values):
         value_set = set()
@@ -986,6 +1011,9 @@ class Condition:
         else:
             return self
 
+    def collect_dependencies(self):
+        return ()
+
 class _TrueConditionType(Condition):
     def is_known_true(self):
         return True
@@ -1087,6 +1115,12 @@ class AtLeastCondition(Condition):
 
         return self
 
+    def collect_dependencies(self):
+        result = set()
+        for c in self.conditions:
+            result.update(c.collect_dependencies())
+        return result
+
 def _flatten_and_append_conditions(conditions, l):
     if isinstance(conditions, Condition):
         l.append(conditions)
@@ -1164,6 +1198,9 @@ class VertexCondition(Condition):
     def __translate_from_base__(self, branching_object):
         return VertexCondition(branching_object.translate_from_base(self.vertex))
 
+    def collect_dependencies(self):
+        return {self.vertex,}
+
 class EnumCondition(Condition):
     __slots__ = ['enum', 'values']
 
@@ -1237,7 +1274,10 @@ deduction functions?
         self._condition = new_condition = self._condition.substitute(name, condition)
         self._necessary_condition = new_necessary_condition = self._necessary_condition.substitute(name, condition)
         self._sufficient_condition = new_sufficient_condition = self._sufficient_condition.substitute(name, condition)
-        return old_condition is not new_condition or old_necessary_condition is not new_necessary_condition or old_sufficient_condition is not new_sufficient_condition
+        result = old_condition is not new_condition or old_necessary_condition is not new_necessary_condition or old_sufficient_condition is not new_sufficient_condition
+        if result:
+            self.updated()
+        return result
 
     def _get_condition(self):
         return self._condition
@@ -1246,6 +1286,7 @@ deduction functions?
         if self._condition_fixed and self._condition is not VertexType._condition:
             raise Exception("condition cannot be set after fast_deduce was first called, use substitute() method")
         self._condition = condition
+        self.updated()
 
     condition = property(_get_condition, _set_condition)
 
@@ -1271,6 +1312,13 @@ deduction functions?
     def fast_deduce(self):
         self._condition_fixed = True
         GameObjectType.fast_deduce(self)
+
+    def collect_dependencies(self):
+        result = GameObjectType.collect_dependencies(self)
+        result.update(self._condition.collect_dependencies())
+        result.update(self._sufficient_condition.collect_dependencies())
+        result.update(self._necessary_condition.collect_dependencies())
+        return result
 
     def debug_print(self, indent=0):
         GameObjectType.debug_print(self, indent)
