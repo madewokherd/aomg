@@ -1309,8 +1309,41 @@ deduction functions?
     is_known = False
     known_access = None
 
+    def _simplify(self):
+        result = False
+        simplified_condition = self._condition.simplify()
+        if simplified_condition is TrueCondition or simplified_condition is FalseCondition:
+            self.known_access = (simplified_condition is TrueCondition)
+            self.is_known = True
+            self._condition = self._necessary_condition = self._sufficient_condition = simplified_condition
+            return True
+        if simplified_condition is not self._condition:
+            self._condition = simplified_condition
+            result = True
+        necessary_condition = self._necessary_condition.simplify()
+        if necessary_condition is FalseCondition:
+            self.known_access = False
+            self.is_known = True
+            self._condition = self._necessary_condition = self._sufficient_condition = FalseCondition
+            return True
+        if necessary_condition is not self._necessary_condition:
+            self._necessary_condition = necessary_condition
+            result = True
+        sufficient_condition = self._sufficient_condition.simplify()
+        if sufficient_condition is TrueCondition:
+            self.known_access = True
+            self.is_known = True
+            self._condition = self._necessary_condition = self._sufficient_condition = TrueCondition
+            return True
+        if sufficient_condition is not self._sufficient_condition:
+            self._sufficient_condition = sufficient_condition
+            result = True
+        return result
+
     def fast_deduce(self):
         self._condition_fixed = True
+        if self._simplify():
+            self.updated()
         GameObjectType.fast_deduce(self)
 
     def collect_dependencies(self):
