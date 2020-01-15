@@ -1358,7 +1358,7 @@ deduction functions?
     def debug_print(self, indent=0):
         GameObjectType.debug_print(self, indent)
         if self.is_known:
-            print (' '*(indent+2) + "known " + self.known_access)
+            print (' '*(indent+2) + "known " + repr(self.known_access))
         else:
             print (' '*(indent+2) + "condition " + repr(self._condition))
             print (' '*(indent+2) + "necessary_condition " + repr(self._necessary_condition))
@@ -1670,6 +1670,11 @@ access_any_state = A vertex indicating that the player can access this position 
         return self._access_any_state
 
     access_any_state = property(get_access_any_state)
+
+    def on_choice(self, choice):
+        VertexType.on_choice(self, choice)
+        if isinstance(choice, MovementPortType) and self._access_any_state is not None:
+            self._access_any_state.substitute(choice.name, Any(And(y.can_exit, y.parent.access_any_state) for y in choice.value.keys()))
 
 Position = PositionType()
 
