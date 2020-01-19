@@ -1014,6 +1014,9 @@ class Condition:
     def collect_dependencies(self):
         return ()
 
+    def find_necessary_vertices(self):
+        return ()
+
 class _TrueConditionType(Condition):
     def is_known_true(self):
         return True
@@ -1121,6 +1124,15 @@ class AtLeastCondition(Condition):
             result.update(c.collect_dependencies())
         return result
 
+    def find_necessary_vertices(self):
+        # a vertex must be necessary for at least len(conditions)-count+1 of the sub-conditions to qualify
+        vertex_counts = {}
+        required_count = len(self.conditions) - self.count + 1
+        for condition in self.conditions:
+            for vertex in condition.find_necessary_vertices():
+                vertex_counts[vertex] = vertex_counts.get(vertex, 0) + 1
+        return [k for (k, v) in vertex_counts.items() if v >= required_count]
+
 def _flatten_and_append_conditions(conditions, l):
     if isinstance(conditions, Condition):
         l.append(conditions)
@@ -1201,6 +1213,11 @@ class VertexCondition(Condition):
     def collect_dependencies(self):
         return {self.vertex,}
 
+    def find_necessary_vertices(self):
+        result = {self.vertex,}
+        result.update(self.vertex._necessary_vertices.keys())
+        return result
+
 class EnumCondition(Condition):
     __slots__ = ['enum', 'values']
 
@@ -1263,6 +1280,10 @@ deduction functions?
     _sufficient_condition = PlaceholderCondition("sufficient")
     _condition_fixed = False
 
+    def __ctor__(self, *args, **kwargs):
+        self._necessary_vertices = {}
+        GameObjectType.__ctor__(self, *args, **kwargs)
+
     def _get_condition_fixed(self):
         return self._condition_fixed
 
@@ -1311,31 +1332,34 @@ deduction functions?
     is_known = False
     known_access = None
 
+    def _set_known_access(self, value):
+        if self.is_known:
+            assert self.known_access == value
+            return
+        self.known_access = value
+        self.is_known = True
+        self._condition = self._necessary_condition = self._sufficient_condition = TrueCondition if value else FalseCondition
+        self.updated()
+
     def _simplify(self):
         result = False
         simplified_condition = self._condition.simplify()
         if simplified_condition is TrueCondition or simplified_condition is FalseCondition:
-            self.known_access = (simplified_condition is TrueCondition)
-            self.is_known = True
-            self._condition = self._necessary_condition = self._sufficient_condition = simplified_condition
+            self._set_known_access(simplified_condition is TrueCondition)
             return True
         if simplified_condition is not self._condition:
             self._condition = simplified_condition
             result = True
         necessary_condition = self._necessary_condition.simplify()
         if necessary_condition is FalseCondition:
-            self.known_access = False
-            self.is_known = True
-            self._condition = self._necessary_condition = self._sufficient_condition = FalseCondition
+            self._set_known_access(False)
             return True
         if necessary_condition is not self._necessary_condition:
             self._necessary_condition = necessary_condition
             result = True
         sufficient_condition = self._sufficient_condition.simplify()
         if sufficient_condition is TrueCondition:
-            self.known_access = True
-            self.is_known = True
-            self._condition = self._necessary_condition = self._sufficient_condition = TrueCondition
+            self._set_known_access(True)
             return True
         if sufficient_condition is not self._sufficient_condition:
             self._sufficient_condition = sufficient_condition
@@ -1344,15 +1368,48 @@ deduction functions?
 
     def fast_deduce(self):
         self._condition_fixed = True
-        if self._simplify():
+        changed = False
+        if not self.is_known and self._simplify():
+            changed = True
+        if not self.is_known:
+            for necessary in And(self._condition, self._necessary_condition).find_necessary_vertices():
+                if necessary not in self._necessary_vertices:
+                    self._necessary_vertices[necessary] = None
+                    changed = True
+        if not self.is_known:
+            to_check = list(self._necessary_vertices.keys())
+            i = 0
+            while i < len(to_check):
+                vertex = to_check[i]
+                i += 1
+                if vertex.is_known:
+                    if vertex.known_access:
+                        del self._necessary_vertices[vertex]
+                        # this can't lead to any useful information so we don't set changed
+                    else:
+                        self._set_known_access(False)
+                        break
+                else:
+                    if self in vertex._necessary_vertices:
+                        # necessity loop
+                        self._set_known_access(False)
+                        break
+                    for v in vertex._necessary_vertices:
+                        if v not in self._necessary_vertices:
+                            self._necessary_vertices[v] = None
+                            changed = True
+                            to_check.append(v)
+        if not self.is_known and changed:
             self.updated()
         GameObjectType.fast_deduce(self)
 
     def collect_dependencies(self):
         result = GameObjectType.collect_dependencies(self)
-        result.update(self._condition.collect_dependencies())
-        result.update(self._sufficient_condition.collect_dependencies())
-        result.update(self._necessary_condition.collect_dependencies())
+        if not self.is_known:
+            result.update(self._condition.collect_dependencies())
+            result.update(self._sufficient_condition.collect_dependencies())
+            result.update(self._necessary_condition.collect_dependencies())
+            result.update(self._necessary_vertices.keys())
         return result
 
     def debug_print(self, indent=0):
