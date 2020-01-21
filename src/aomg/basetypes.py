@@ -681,15 +681,15 @@ applies_to = A tuple of choice types to which this strategy can be applied"""
 
     applies_to = ()
 
-    def __init__(self):
-        BranchingObject.__init__(self)
+    def __init__(self, *args, **kwargs):
         if type(self) == ChoiceStrategy:
             raise TypeError("ChoiceStrategy is an abstract class")
+        BranchingObject.__init__(self, *args, **kwargs)
 
     def make_choice(self, choice):
         """Makes the choice. Multiple iterations may be required before choice.value is known.
 
-This modifies choice and returns a token which can be passed to eliminate_choice. Token must not be or reference a BranchingObject.
+This modifies choice and returns a token which can be passed to eliminate_choice, or None. Token must not be or reference a BranchingObject. None indicates that this strategy cannot make any choice.
 
 This must be overridden by subclasses, and does not need to be called by them."""
         if type(self).make_choice == ChoiceStrategy.make_choice:
@@ -770,6 +770,45 @@ value = The value selected for this choice if set. Accessing this is equivalent 
             print(' '*(indent+2) + repr(self.value))
 
 Choice = ChoiceType()
+
+class WeightedStrategy(ChoiceStrategy):
+    """Makes a choice by choosing from a set of values or strategies, by weight
+
+strategies = tuple of (weight, strategy_or_value) pairs
+"""
+    applies_to = (ChoiceType,)
+
+    def make_choice(self, choice):
+        rng = choice.get_world().rng
+        while True:
+            best = 2.0
+            best_index = -1
+            for index, (weight, strategy_or_value) in enumerate(self.strategies):
+                if self.getattr((choice, 'impossible', index), False):
+                    continue
+                key = rng(choice.get_string_path()+'\0WeightedStrategy\0'+str(index)).random() / weight
+                if key < best:
+                    best = key
+                    best_index = index
+            if best_index == -1:
+                return None
+            strategy_or_value = self.strategies[best_index][1]
+            if isinstance(strategy_or_value, ChoiceStrategy):
+                result = strategy_or_value.make_choice(choice)
+                if result is None:
+                    self.setattr((choice, 'impossible', best_index), True)
+                    continue # try again
+                return best_index, result
+            else:
+                choice.value = strategy_or_value
+                return best_index, None
+
+    def eliminate_choice(self, choice, token):
+        strategy_or_value = self.strategies[token[0]]
+        if isinstance(strategy_or_value, ChoiceStrategy):
+            strategy_or_value.eliminate_choice(choice, token[1])
+        else:
+            self.setattr((choice, 'impossible', token[0]), True)
 
 class NumericalChoiceType(ChoiceType):
     """A choice with a numerical value.
@@ -1636,8 +1675,8 @@ PortType.compatible_types = (PortType,)
 class RandomPortStrategy(ChoiceStrategy):
     applies_to = (PortType,)
 
-    def __init__(self, conservative=False):
-        ChoiceStrategy.__init__(self)
+    def __ctor__(self, conservative=False):
+        ChoiceStrategy.__ctor__(self)
         self.conservative = conservative
 
     def make_choice(self, choice):
@@ -1822,6 +1861,12 @@ GridMap = GridMapType()
 class MazeObstacleChoiceType(EnumChoiceType):
     values = ("Nothing", "Wall")
     # TODO: one way north/east, one way south/west, locked, destructable, switch1A,1B,2A,2B,3A,3B
+
+    default = WeightedStrategy(strategies = (
+        (3.0, "Wall"),
+        (0.5, "Nothing"),
+        (0.5, EnumEvenDistribution()),
+        ))
 
     def __ctor__(self, cell_a, cell_b):
         EnumChoiceType.__ctor__(self)
