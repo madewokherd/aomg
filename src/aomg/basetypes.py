@@ -1301,7 +1301,7 @@ class VertexType(GameObjectType):
     """Anything a player can have or be denied access to. Once a player has access to a vertex, that is permanent and lasts the entire game.
 
 Attributes:
-condition = A necessary and sufficient condition to access this vertex. Defaults to PlaceholderCondition("exact"). This cannot be assigned after fast_deduce is called for this vertex, but it can be modified with substitute().
+condition = A necessary and sufficient condition to access this vertex. Defaults to PlaceholderCondition("exact"). This cannot be reassigned after fast_deduce is called for this vertex.
 condition_fixed = True if fast_deduce has been called and condition cannot be assigned.
 dependent_vertices = A set of vertices which may need to be updated when this one changes.
 is_known = A boolean value indicating whether the reachability of this vertex is known for the rest of the game.
@@ -1328,25 +1328,12 @@ deduction functions?
 
     condition_fixed = property(_get_condition_fixed)
 
-    def substitute(self, name, condition):
-        """Replaces PlaceholderCondition("name") in condition, necessary_condition, and sufficient_condition. Returns a boolean indicating whether anything changed."""
-        old_condition = self._condition
-        old_necessary_condition = self._necessary_condition
-        old_sufficient_condition = self._sufficient_condition
-        self._condition = new_condition = self._condition.substitute(name, condition)
-        self._necessary_condition = new_necessary_condition = self._necessary_condition.substitute(name, condition)
-        self._sufficient_condition = new_sufficient_condition = self._sufficient_condition.substitute(name, condition)
-        result = old_condition is not new_condition or old_necessary_condition is not new_necessary_condition or old_sufficient_condition is not new_sufficient_condition
-        if result:
-            self.updated()
-        return result
-
     def _get_condition(self):
         return self._condition
 
     def _set_condition(self, condition):
         if self._condition_fixed and self._condition is not VertexType._condition:
-            raise Exception("condition cannot be set after fast_deduce was first called, use substitute() method")
+            raise Exception("condition cannot be reassigned after fast_deduce was first called")
         self._condition = condition
         self.updated()
 
@@ -1475,7 +1462,7 @@ class RequiredGoalsVertex(VertexType):
             conditions = []
             for goal in self.get_world().descendents_by_type(GoalType):
                 conditions.append(Or(goal.Configuration.IsNot("Required"), goal))
-            self.substitute("exact", All(conditions).simplify())
+            self.condition = All(conditions).simplify()
         VertexType.fast_deduce(self)
 
 class OptionalGoalsVertex(VertexType):
@@ -1484,7 +1471,7 @@ class OptionalGoalsVertex(VertexType):
             conditions = []
             for goal in self.get_world().descendents_by_type(GoalType):
                 conditions.append(Or(goal.Configuration.Is("Ignore"), goal))
-            self.substitute("exact", All(conditions).simplify())
+            self.condition = All(conditions).simplify()
         VertexType.fast_deduce(self)
 
 class PortType(ChoiceType):
@@ -1718,17 +1705,27 @@ class MovementPortType(PortType):
     """A port that allows a player to travel from one position to another.
     
 Todo:
-can_enter = Condition indicating whether it's possible to enter self.parent through a connected port.
-can_exit = Condition indicating whether it's possible to exit self.parent through a connected port.
+can_enter = Vertex indicating whether it's possible to enter self.parent through a connected port. Condition may be set by user, defaults to TrueCondition.
+can_exit = Vertex indicating whether it's possible to exit self.parent through a connected port. Condition may be set by user, defaults to TrueCondition.
+can_reach_entrance = Vertex indicating whether this position could be reached through a connected position, if can_enter is true. Conditions are set by this object.
 enter_transitions = List of state transitions and constraints triggered when entering through this port.
 exit_transitions = List of state transitions and constraints triggered when exiting through this port.
 can_start = Game can start here.
 """
-    can_enter = TrueCondition
-    can_exit = TrueCondition
     enter_transitions = ()
     exit_transitions = ()
     can_start = True
+
+    def __ctor__(self, *args, **kwargs):
+        PortType.__ctor__(self, *args, **kwargs)
+        self.can_reach_entrance = VertexType()
+        self.can_enter = VertexType(condition=TrueCondition)
+        self.can_exit = VertexType(condition=TrueCondition)
+
+    def on_set(self, value):
+        PortType.on_set(self, value)
+        self.can_reach_entrance.condition = Any(
+            And(x.can_exit, x.parent.access_any_state) for x in value.keys())
 
 MovementPortType.compatible_types = (MovementPortType,)
 
@@ -1757,20 +1754,11 @@ access_any_state = A vertex indicating that the player can access this position 
             ports = []
             for x in self.children.values():
                 if isinstance(x, MovementPortType):
-                    if x.known:
-                        can_access_exit = Any(And(y.can_exit, y.parent.access_any_state) for y in x.value.keys())
-                    else:
-                        can_access_exit = PlaceholderCondition(x.name)
-                    ports.append(All(x.can_enter, can_access_exit))
+                    ports.append(And(x.can_enter, x.can_reach_entrance))
             self._access_any_state.condition = Any(ports)
         return self._access_any_state
 
     access_any_state = property(get_access_any_state)
-
-    def on_choice(self, choice):
-        VertexType.on_choice(self, choice)
-        if isinstance(choice, MovementPortType) and self._access_any_state is not None:
-            self._access_any_state.substitute(choice.name, Any(And(y.can_exit, y.parent.access_any_state) for y in choice.value.keys()))
 
 Position = PositionType()
 
@@ -1875,13 +1863,13 @@ class MazeObstacleChoiceType(EnumChoiceType):
 class MazeMap(GridMapType):
     def connect_cells_horizontal(self, west, east):
         obstacle = MazeObstacleChoiceType(west, east)
-        east.West.can_enter = east.West.can_exit = obstacle.Is("Nothing")
+        east.West.can_enter.condition = east.West.can_exit.condition = obstacle.Is("Nothing")
         self.setattr('EastObstacle' + str((west.x, west.y)), obstacle)
         GridMapType.connect_cells_horizontal(self, west, east)
 
     def connect_cells_vertical(self, north, south):
         obstacle = MazeObstacleChoiceType(north, south)
-        south.North.can_enter = south.North.can_exit = obstacle.Is("Nothing")
+        south.North.can_enter.condition = south.North.can_exit.condition = obstacle.Is("Nothing")
         self.setattr('SouthObstacle' + str((north.x, north.y)), obstacle)
         GridMapType.connect_cells_vertical(self, north, south)
 
