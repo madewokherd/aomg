@@ -781,13 +781,13 @@ strategies = tuple of (weight, strategy_or_value) pairs
     def make_choice(self, choice):
         rng = choice.get_world().rng
         while True:
-            best = 2.0
+            best = None
             best_index = -1
             for index, (weight, strategy_or_value) in enumerate(self.strategies):
                 if self.getattr((choice, 'impossible', index), False):
                     continue
                 key = rng(choice.get_string_path()+'\0WeightedStrategy\0'+str(index)).random() / weight
-                if key < best:
+                if best is None or key < best:
                     best = key
                     best_index = index
             if best_index == -1:
