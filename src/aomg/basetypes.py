@@ -2029,7 +2029,3 @@ if __name__ == '__main__':
 
     w.object_from_path(('MazeGame', 'map', '(1, 1)'), relative=True).access_any_state.debug_print()
     print(w.object_from_path(('MazeGame', 'map', '(1, 1)'), relative=True).access_any_state.condition.simplify())
-
-    v = VertexType()
-    v.substitute('necessary', TrueCondition)
-    v.debug_print()
