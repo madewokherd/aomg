@@ -343,6 +343,7 @@ class BranchingObject(object):
         path_end = self.universe_history[len(self.base_object.universe_history):]
         if len(obj.universe_history) >= len(path_end) and obj.universe_history[-len(path_end):] == path_end:
             return BranchingObject.from_history(obj.universe_history[:-len(path_end)])
+        raise ValueError("object does not exist in base")
 
     def translate_to_base(self, x):
         return map_branching_objects(x, self._to_base)
