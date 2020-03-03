@@ -83,7 +83,7 @@ history_to_object - A mapping of universe histories to BranchingObjects. Every o
                 readonly_clone = BranchingObject._new(type(val), history)
                 readonly_clone.__dictionary__ = val.__dictionary__
                 val.__dictionary__ = None
-                val.base_object = None
+                val.base_object = readonly_clone
                 result.history_to_object[val.universe_history] = weakref.ref(val)
                 history[-1].history_to_object[history] = readonly_clone
             elif isinstance(val, weakref.ref):
