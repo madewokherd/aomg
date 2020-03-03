@@ -18,30 +18,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-# object model notes
-#  all game objects are an instance of BranchingObject
-#  subclassing a BranchingObject forks it
-#  BranchingObject.fork() also forks it
-#  BranchingObject.fork_object identifies the object within its universe
-#  BranchingObject.fork_base identifies the universe this object is in (forking creates a universe)
-#  BranchingObject does not have a __dict__ but has a world_dictionary
-#  world_dictionary keys are (object, name)
-#  world_dictionary values should be immutable or a BranchingObject, or they will be unaffected by forks
-
-# TODO:
-#  * Make it possible to subclass a BranchingObject instance
-
 import hashlib
 import random
-
-class FrozenDict(dict):
-    def __setitem__(self, *args, **kwargs):
-        raise TypeError("cannot modify a FrozenDict")
-    clear = __setitem__
-    pop = __setitem__
-    popitem = __setitem__
-    setdefault = __setitem__
-    update = __setitem__
+import types
+import weakref
 
 def _readable_name(x):
     module = ''
@@ -58,169 +38,114 @@ def _readable_name(x):
             qualname = str(x)
     return module+qualname
 
-class _NOTHING(object):
-    "sentinal value for BranchingObject, nothing to see here"
-_NOTHING = _NOTHING()
-
 class Universe:
-    __slots__ = ['dictionary', 'dictionary_is_readonly', 'readonly', 'related_universes', 'base_universes', 'object_to_base', 'base_to_object']
+    """A universe represents a snapshot of a set of objects and their state. This isn't meant to be used directly, only by BranchingObject.
 
-    def __init__(self, readonly_copy_of=None, base_universes=None):
-        if readonly_copy_of is not None:
-            self.dictionary = readonly_copy_of.dictionary
-            self.dictionary_is_readonly = True
-            self.readonly = True
-            self.related_universes = None
-            self.base_universes = readonly_copy_of.base_universes
-            self.object_to_base = readonly_copy_of.object_to_base.copy()
-            self.base_to_object = readonly_copy_of.base_to_object.copy()
-        elif base_universes is not None:
-            self.dictionary = {}
-            self.dictionary_is_readonly = False
-            self.readonly = False
-            self.related_universes = {self}
-            self.base_universes = base_universes
-            self.object_to_base = {}
-            self.base_to_object = {}
-        else:
-            self.dictionary = {}
-            self.dictionary_is_readonly = False
-            self.readonly = False
-            self.related_universes = {self}
-            self.base_universes = {} # mapping of original base universes to read-only copies
-            self.object_to_base = {}
-            self.base_to_object = {}
+Attributes:
+related_universes - A set of universes that may be referenced by objects in this universe, directly or indirectly. Every universe in related_universes has the same (identical) related_universes value.
+history_to_object - A mapping of universe histories to BranchingObjects. Every object has a unique history. When a universe A is forked, 2 new universes B and C are created: all existing objects in A's related universes have B prepended to their history. All objects in A's related universes with dictionaries have their dictionaries moved to a new object in A. The new "forked" object is created in C. The result is that A is a read-only snapshot of the state at fork time, and the objects in B and C all take their values from A, until they are modified and gain their own dictionaries. For objects with no dictionary, a weak reference to the object is stored in history_to_object.
+"""
+
+    __slots__ = ['related_universes', 'history_to_object']
+
+    def __init__(self):
+        self.related_universes = {self}
+        self.history_to_object = {}
 
     def combine_universes(self, value):
         "add value's universe to related_universes"
         if isinstance(value, BranchingObject):
-            if value.__universe__.related_universes is not self.related_universes:
-                if len(value.__universe__.related_universes) > len(self.related_universes):
-                    greater = value.__universe__.related_universes
+            other = value.universe_history[-1]
+            if other.related_universes is not self.related_universes:
+                if len(other.related_universes) > len(self.related_universes):
+                    greater = other.related_universes
                     lesser = self.related_universes
                 else:
                     greater = self.related_universes
-                    lesser = value.__universe__.related_universes
+                    lesser = other.related_universes
                 greater.update(lesser)
                 for universe in lesser:
                     universe.related_universes = greater
-        elif isinstance(value, tuple):
-            for item in value:
-                self.combine_universes(item)
+            return value
         else:
-            try:
-                value.__combine_universes__(self)
-            except AttributeError:
-                pass
-
-    def translate_to_base(self, obj):
-        if isinstance(obj, BranchingObject):
-            return self.object_to_base[obj][0]
-        elif isinstance(obj, tuple):
-            return tuple(self.translate_to_base(x) for x in obj)
-        else:
-            try:
-                return obj.__translate_to_base__(self)
-            except AttributeError:
-                return obj
-
-    def translate_from_base(self, obj):
-        if isinstance(obj, BranchingObject):
-            try:
-                return self.base_to_object[obj]
-            except KeyError:
-                self.base_to_object[obj] = result = type(obj).__new__(type(obj))
-                object.__setattr__(result, '__universe__', self)
-                self.object_to_base[result] = obj, self.base_universes[object.__getattribute__(obj, '__universe__')]
-                return result
-        elif isinstance(obj, tuple):
-            return tuple(self.translate_from_base(x) for x in obj)
-        else:
-            try:
-                return obj.__translate_from_base__(self)
-            except AttributeError:
-                return obj
-
-    def setattr(self, obj, key, value):
-        if self.readonly:
-            raise ValueError("Universe is readonly")
-        if self.dictionary_is_readonly:
-            self.dictionary = self.dictionary.copy()
-            self.dictionary_is_readonly = False
-        self.dictionary[obj, key] = value
-        self.combine_universes(key)
-        self.combine_universes(value)
-
-    def getattr(self, obj, key):
-        try:
-            result = self.dictionary[obj, key]
-        except KeyError:
-            pass
-        else:
-            return result
-
-        try:
-            base_obj, base_universe = self.object_to_base[obj]
-            base_key = self.translate_to_base(key)
-        except KeyError:
-            pass
-        else:
-            try:
-                result = base_universe.getattr(base_obj, base_key)
-            except AttributeError:
-                pass
-            else:
-                return self.translate_from_base(result)
-
-        raise AttributeError()
-
-    def readonly_copy(self):
-        if self.readonly:
-            return self
-        self.dictionary_is_readonly = True
-        return Universe(readonly_copy_of=self)
+            return map_branching_objects(value, self.combine_universes)
 
     def fork(self):
-        # make a readonly copy of every related universe
-        base_universes = {}
+        "Move all objects in related_universes to a new universe, and return the new universe"
+        result = Universe()
+        objects = []
         for universe in self.related_universes:
-            base_universes[universe] = universe.readonly_copy()
-        return Universe(base_universes=base_universes)
-
-    def debug_dump(self, indent='', parent=None):
-        objects = set()
-        objects.update(self.object_to_base.keys())
-        for k in self.dictionary.keys():
-            objects.add(k[0])
-        print(indent+'Objects:')
-        for obj in objects:
-            print(indent+'  '+repr(obj))
-            if obj in self.object_to_base:
-                print(indent+'    To base:', self.object_to_base[obj][0], self.object_to_base[obj][1])
-            if parent is not None and obj in parent.base_to_object:
-                print(indent+'    From base:', parent.base_to_object[obj])
-            for k, v in self.dictionary.items():
-                if k[0] != obj:
-                    continue
-                print(indent+'    '+repr(k[1]), '=', repr(v))
-        if self.base_universes:
-            print(indent+'Bases:')
-            for k, v in self.base_universes.items():
-                print(indent+'  '+repr(k), repr(v))
-                v.debug_dump(indent+'  ', self)
-                
+            objects.extend(universe.history_to_object.items())
+        # move all objects into result
+        for history, val in objects:
+            if isinstance(val, BranchingObject):
+                val.universe_history = history + (result,)
+                readonly_clone = BranchingObject._new(type(val), history)
+                readonly_clone.__dictionary__ = val.__dictionary__
+                val.__dictionary__ = None
+                val.base_object = None
+                result.history_to_object[val.universe_history] = weakref.ref(val)
+                history[-1].history_to_object[history] = readonly_clone
+            elif isinstance(val, weakref.ref):
+                val = val()
+                if val is None:
+                    # object was collected
+                    del history[-1].history_to_object[history]
+                else:
+                    val.universe_history = history + (result,)
+                    result.history_to_object[val.universe_history] = weakref.ref(val)
+                    del history[-1].history_to_object[history]
+        # translate references for any object with a dictionary that we moved to a new base object
+        for history, val in objects:
+            if isinstance(val, BranchingObject):
+                val = BranchingObject.from_history(history)
+                new_dictionary = {}
+                for k, v in val.__dictionary__.items():
+                    k = map_branching_objects(k, BranchingObject._to_immediate_base)
+                    v = map_branching_objects(v, BranchingObject._to_immediate_base)
+                    new_dictionary[k] = v
+                val.__dictionary__ = new_dictionary
+        return result
 
 standard_branching_types = {}
 
+def map_branching_objects(value, fn):
+    try:
+        f = value.__map_branching_objects__
+    except AttributeError:
+        if isinstance(value, tuple):
+            return type(value)(map_branching_objects(x, fn) for x in value)
+        else:
+            return value
+    else:
+        if not isinstance(f, types.MethodType):
+            # happens if we get a type which happens to define __map_branching_objects__
+            return value
+        return f(fn)
+
 class BranchingObject(object):
-    __slots__ = ['__universe__']
+    __slots__ = ['__dictionary__', 'universe_history', 'base_object']
 
     def __init__(self, *args, **kwargs):
-        object.__setattr__(self, '__universe__', Universe()) # FIXME: Use a metaclass to put this in __call__ ?
         self.__ctor__(*args, **kwargs)
 
+    def __new__(cls, *args, **kwargs):
+        self = object.__new__(cls)
+        self.__dictionary__ = {}
+        self.universe_history = (Universe(),)
+        self.base_object = None
+        self.universe_history[0].history_to_object[self.universe_history] = self
+        return self
+
+    def _new(cls, universe_history):
+        self = object.__new__(cls)
+        self.__dictionary__ = None
+        self.universe_history = universe_history
+        self.base_object = None
+        return self
+
     def __setattr__(self, name, value):
-        if name == '__universe__':
+        if name in ('__dictionary__', 'universe_history', 'base_object'):
             object.__setattr__(self, name, value)
             return
         try:
@@ -236,15 +161,18 @@ class BranchingObject(object):
                 pass
             else:
                 return fn(self, value)
+        self.ensure_dictionary()
         value = to_branching_object(value)
-        self.__setattr_hook__(name, value, value is _NOTHING)
-        object.__getattribute__(self, '__universe__').setattr(self, name, value)
+        self.__setattr_hook__(name, value, False)
+        self.universe_history[-1].combine_universes(name)
+        self.universe_history[-1].combine_universes(value)
+        self.__dictionary__[name] = value
 
     def __setattr_hook__(self, name, value, delete=False):
         pass
 
     def __getattribute__(self, name):
-        if name == '__universe__':
+        if name in ('__dictionary__', 'universe_history', 'base_object'):
             return object.__getattribute__(self, name)
         try:
             prop = getattr(type(self), name)
@@ -259,14 +187,25 @@ class BranchingObject(object):
                 pass
             else:
                 return fn(self)
-        try:
-            result = object.__getattribute__(self, '__universe__').getattr(self, name)
-        except AttributeError:
-            pass
+        d = self.__dictionary__
+        if d is None:
+            self.ensure_base()
+            try:
+                tr_name = self.translate_to_base(name)
+            except ValueError:
+                pass
+            else:
+                try:
+                    val = self.base_object.__dictionary__[tr_name]
+                except KeyError:
+                    pass
+                else:
+                    return self.translate_from_base(val)
         else:
-            if result is _NOTHING:
-                raise AttributeError()
-            return result
+            try:
+                return d[name]
+            except KeyError:
+                pass
         try:
             return object.__getattribute__(self, name)
         except TypeError:
@@ -298,16 +237,38 @@ class BranchingObject(object):
 
     def popattr(self, key):
         result = self.getattr(key)
-        self.setattr(key, _NOTHING)
+        self.delattr(key)
         return result
 
-    __delattr__ = delattr = popattr
+    def delattr(self, name):
+        if name in ('__dictionary__', 'universe_history', 'base_object'):
+            raise TypeError("cannot delete BrancingObject slot attributes")
+        try:
+            prop = getattr(type(self), name)
+        except AttributeError:
+            pass
+        except TypeError:
+            pass
+        else:
+            try:
+                fn = prop.__delete__
+            except AttributeError:
+                pass
+            else:
+                return fn(self)
+        self.ensure_dictionary()
+        self.__setattr_hook__(name, None, True)
+        del self.__dictionary__[name]
+
+    __delattr__ = delattr
 
     def fork(self):
         """create a copy of this object and all related objects"""
-        universe = object.__getattribute__(self, '__universe__')
-        new_universe = universe.fork()
-        return new_universe.translate_from_base(self)
+        prev_history = self.universe_history
+        self.universe_history[-1].fork()
+        new_universe = Universe()
+        new_history = prev_history + (new_universe,)
+        return BranchingObject.from_history(new_history)
 
     def __ctor__(self, *args, **kwargs):
         """override to handle arguments to this type or instances of it"""
@@ -320,6 +281,71 @@ class BranchingObject(object):
         result = self.fork()
         result.__ctor__(*args, **kwargs)
         return result
+
+    def __map_branching_objects__(self, fn):
+        return fn(self)
+
+    def _to_immediate_base(self):
+        return BranchingObject.from_history(self.universe_history[:-1])
+
+    @staticmethod
+    def from_history(history):
+        if (type(history) != tuple):
+            history = tuple(history)
+        universe = history[-1]
+        try:
+            obj = universe.history_to_object[history]
+        except KeyError:
+            pass
+        else:
+            if isinstance(obj, BranchingObject):
+                return obj
+            # else it's a weakref
+            obj = obj()
+            if obj is not None:
+                return obj
+            # broken weakref, don't bother clearing it because we're about to replace it
+        basest_universe = history[0]
+        t = basest_universe.history_to_object[(basest_universe,)]
+        obj = BranchingObject._new(type(t), history)
+        universe.history_to_object[history] = weakref.ref(obj)
+        return obj
+
+    def ensure_base(self):
+        if self.base_object is None:
+            history = self.universe_history[:-1]
+            while True:
+                try:
+                    obj = history[-1].history_to_object[history]
+                    if isinstance(obj, BranchingObject):
+                        break
+                except KeyError:
+                    pass
+                history = history[:-1]
+            self.base_object = obj
+
+    def ensure_dictionary(self):
+        if self.__dictionary__ is None:
+            self.ensure_base()
+            d = {}
+            for k, v in self.base_object.__dictionary__.items():
+                d[self.translate_from_base(k)] = self.translate_from_base(v)
+            self.__dictionary__ = d
+            self.universe_history[-1].history_to_object[self.universe_history] = self
+
+    def _from_base(self, obj):
+        return BranchingObject.from_history(obj.universe_history + self.universe_history[len(self.base_object.universe_history):])
+
+    def translate_from_base(self, x):
+        return map_branching_objects(x, self._from_base)
+
+    def _to_base(self, obj):
+        path_end = self.universe_history[len(self.base_object.universe_history):]
+        if len(obj.universe_history) >= len(path_end) and obj.universe_history[-len(path_end):] == path_end:
+            return BranchingObject.from_history(obj.universe_history[:-len(path_end)])
+
+    def translate_to_base(self, x):
+        return map_branching_objects(x, self._to_base)
 
 def to_branching_object(obj):
     try:
@@ -567,7 +593,7 @@ class GameObjectType(BranchingObject):
         if self._name is None:
             # avoid side-effects from accessing self.name
             return BranchingObject.__repr__(self)
-        return "<%s object at %s in universe 0x%x>" % (type(self).__name__, self.get_string_path(), id(self.__universe__))
+        return "<%s object at %s universe %x>" % (type(self).__name__, self.get_string_path(), id(self.universe_history[-1]))
 
     def add_child(self, child, name=None):
         if not isinstance(child, GameObjectType):
@@ -1113,11 +1139,8 @@ class AtLeastCondition(Condition):
                 return False
         return False
 
-    def __translate_to_base__(self, branching_object):
-        return AtLeastCondition(self.count, branching_object.translate_to_base(self.conditions))
-
-    def __translate_from_base__(self, branching_object):
-        return AtLeastCondition(self.count, branching_object.translate_from_base(self.conditions))
+    def __map_branching_objects__(self, f):
+        return AtLeastCondition(self.count, map_branching_objects(self.conditions, f))
 
     def substitute(self, name, condition):
         new_conditions = tuple(x.substitute(name, condition) for x in self.conditions)
@@ -1243,11 +1266,8 @@ class VertexCondition(Condition):
     def __repr__(self):
         return 'VertexCondition(%s)' % repr(self.vertex)
 
-    def __translate_to_base__(self, branching_object):
-        return VertexCondition(branching_object.translate_to_base(self.vertex))
-
-    def __translate_from_base__(self, branching_object):
-        return VertexCondition(branching_object.translate_from_base(self.vertex))
+    def __map_branching_objects__(self, f):
+        return VertexCondition(f(self.vertex))
 
     def collect_dependencies(self):
         return {self.vertex,}
@@ -1274,11 +1294,8 @@ class EnumCondition(Condition):
     def __repr__(self):
         return 'EnumCondition(%s, %s)' % (repr(self.enum), repr(self.values))
 
-    def __translate_to_base__(self, branching_object):
-        return EnumCondition(branching_object.translate_to_base(self.enum), self.values)
-
-    def __translate_from_base__(self, branching_object):
-        return EnumCondition(branching_object.translate_from_base(self.enum), self.values)
+    def __map_branching_objects__(self, f):
+        return EnumCondition(f(self.enum), self.values)
 
     def simplify(self):
         if self.enum.known:
