@@ -1410,39 +1410,77 @@ deduction functions?
             result = True
         return result
 
+    def _maybe_simplify(self):
+        if not self.is_known and self._simplify():
+            return True
+        return False
+
+    def _check_for_necessity_loops(self):
+        found = False
+        for necessary in And(self._condition, self._necessary_condition).find_necessary_vertices():
+            if necessary not in self._necessary_vertices:
+                self._necessary_vertices[necessary] = None
+                found = True
+        if not found:
+            # no new necessary vertices for this object
+            return False
+
+        visited = {self}
+        vertex_stack = [self]
+        necessary_vertices_stack = [list(self._necessary_vertices)]
+
+        while vertex_stack:
+            current_vertex = vertex_stack[-1]
+            necessary_vertices = necessary_vertices_stack[-1]
+            #print(vertex_stack, necessary_vertices)
+
+            if not necessary_vertices:
+                vertex_stack.pop()
+                necessary_vertices_stack.pop()
+                continue
+
+            necessary_vertex = necessary_vertices.pop()
+            if necessary_vertex in visited:
+                if necessary_vertex in vertex_stack:
+                    # necessity loop
+                    for item in vertex_stack:
+                        item._set_known_access(False)
+                    break
+                else:
+                    continue
+            else:
+                necessary_vertex._maybe_simplify()
+
+                if necessary_vertex.is_known:
+                    if necessary_vertex.known_access:
+                        del current_vertex._necessary_vertices[necessary_vertex]
+                        continue
+                    else:
+                        # not possible to access anything in our stack (is it even possible to get here?)
+                        for item in vertex_stack:
+                            item._set_known_access(False)
+                        break
+
+                # check for new requirements for necessary_vertex
+                for necessary in And(necessary_vertex._condition, necessary_vertex._necessary_condition).find_necessary_vertices():
+                    if necessary not in necessary_vertex._necessary_vertices:
+                        necessary_vertex._necessary_vertices[necessary] = None
+
+                # add to stack
+                visited.add(necessary_vertex)
+                vertex_stack.append(necessary_vertex)
+                necessary_vertices_stack.append(list(necessary_vertex._necessary_vertices))
+        else:
+            return False # no new information other than necessary vertices
+        return True # changed
+
     def fast_deduce(self):
         self._condition_fixed = True
-        changed = False
-        if not self.is_known and self._simplify():
-            changed = True
+        changed = self._maybe_simplify()
+
         if not self.is_known:
-            for necessary in And(self._condition, self._necessary_condition).find_necessary_vertices():
-                if necessary not in self._necessary_vertices:
-                    self._necessary_vertices[necessary] = None
-                    changed = True
-        if not self.is_known:
-            to_check = list(self._necessary_vertices.keys())
-            i = 0
-            while i < len(to_check):
-                vertex = to_check[i]
-                i += 1
-                if vertex.is_known:
-                    if vertex.known_access:
-                        del self._necessary_vertices[vertex]
-                        # this can't lead to any useful information so we don't set changed
-                    else:
-                        self._set_known_access(False)
-                        break
-                else:
-                    if self in vertex._necessary_vertices:
-                        # necessity loop
-                        self._set_known_access(False)
-                        break
-                    for v in vertex._necessary_vertices:
-                        if v not in self._necessary_vertices:
-                            self._necessary_vertices[v] = None
-                            changed = True
-                            to_check.append(v)
+            if self._check_for_necessity_loops():
+                changed = True
         if not self.is_known and changed:
             self.updated()
         GameObjectType.fast_deduce(self)
