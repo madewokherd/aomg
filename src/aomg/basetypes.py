@@ -1259,6 +1259,16 @@ class VertexCondition(Condition):
     def is_known_false(self):
         return self.vertex.is_known and not self.vertex.known_access
 
+    def simplify(self):
+        if self.vertex.is_known:
+            if self.vertex.known_access:
+                return TrueCondition
+            else:
+                return FalseCondition
+        if self.vertex.equivalent_to is not None:
+            return VertexCondition(self.vertex.equivalent_to).simplify()
+        return self
+
     def substitute(self, name, condition):
         if name == self.vertex:
             return condition
@@ -1324,6 +1334,7 @@ condition_fixed = True if fast_deduce has been called and condition cannot be as
 dependent_vertices = A set of vertices which may need to be updated when this one changes.
 is_known = A boolean value indicating whether the reachability of this vertex is known for the rest of the game.
 known_access = If is_known, whether the vertex is reachable.
+equivalent_to = Another vertex to which this one is equivalent, or None
 necessary_condition = A necessary condition to access this vertex. If this condition is known false, the vertex is known unreachable. Defaults to PlaceholderCondition("necessary")
 sufficient_condition = A sufficient condition to access this vertex. If this condition is known true, the vertex is reachable. Defaults to PlaceholderCondition("sufficient")
 
@@ -1375,6 +1386,8 @@ deduction functions?
 
     is_known = False
     known_access = None
+    
+    equivalent_to = None
 
     def _set_known_access(self, value):
         if self.is_known:
@@ -1383,6 +1396,26 @@ deduction functions?
         self.known_access = value
         self.is_known = True
         self._condition = self._necessary_condition = self._sufficient_condition = TrueCondition if value else FalseCondition
+        self.updated()
+
+    def _set_equivalent_to(self, vertex):
+        eq = vertex
+        while True:
+            if eq == self:
+                # necessity loop
+                self.equivalent_to = None
+                self._set_known_access(False)
+                return
+            if eq.is_known:
+                self.equivalent_to = None
+                self._set_known_access(eq.known_access)
+                return
+            eq_eq = eq.equivalent_to
+            if eq_eq is None:
+                break
+            else:
+                eq = eq_eq
+        self.equivalent_to = eq
         self.updated()
 
     def _simplify(self):
@@ -1394,6 +1427,9 @@ deduction functions?
         if simplified_condition is not self._condition:
             self._condition = simplified_condition
             result = True
+        if isinstance(self._condition, VertexCondition) and self.equivalent_to is None:
+            self._set_equivalent_to(self._condition.vertex)
+            return True
         necessary_condition = self._necessary_condition.simplify()
         if necessary_condition is FalseCondition:
             self._set_known_access(False)
@@ -1411,9 +1447,17 @@ deduction functions?
         return result
 
     def _maybe_simplify(self):
-        if not self.is_known and self._simplify():
+        if self.is_known:
+            return False
+        if self.equivalent_to is not None:
+            if self.equivalent_to.is_known:
+                self._set_known_access(self.equivalent_to.known_access)
+                return True
+            if self.equivalent_to.equivalent_to is not None:
+                self._set_equivalent_to(self.equivalent_to)
+                return True
             return True
-        return False
+        return self._simplify()
 
     def _check_for_necessity_loops(self):
         found = False
@@ -1478,16 +1522,20 @@ deduction functions?
         self._condition_fixed = True
         changed = self._maybe_simplify()
 
-        if not self.is_known:
+        if self.equivalent_to is None and not self.is_known:
             if self._check_for_necessity_loops():
                 changed = True
-        if not self.is_known and changed:
+        if changed:
             self.updated()
         GameObjectType.fast_deduce(self)
 
     def collect_dependencies(self):
         result = GameObjectType.collect_dependencies(self)
-        if not self.is_known:
+        if self.is_known:
+            pass
+        elif self.equivalent_to is not None:
+            result.add(self.equivalent_to)
+        else:
             result.update(self._condition.collect_dependencies())
             result.update(self._sufficient_condition.collect_dependencies())
             result.update(self._necessary_condition.collect_dependencies())
@@ -1498,6 +1546,8 @@ deduction functions?
         GameObjectType.debug_print(self, indent)
         if self.is_known:
             print (' '*(indent+2) + "known " + repr(self.known_access))
+        elif self.equivalent_to is not None:
+            print (' '*(indent+2) + "equivalent_to " + repr(self.equivalent_to))
         else:
             print (' '*(indent+2) + "condition " + repr(self._condition))
             print (' '*(indent+2) + "necessary_condition " + repr(self._necessary_condition))
