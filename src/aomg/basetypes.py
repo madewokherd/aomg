@@ -1285,7 +1285,6 @@ class VertexCondition(Condition):
 
     def find_necessary_vertices(self):
         result = {self.vertex,}
-        result.update(self.vertex._necessary_vertices.keys())
         return result
 
 class EnumCondition(Condition):
