@@ -1066,7 +1066,10 @@ class Condition:
     def is_known(self):
         return self.is_known_true() or self.is_known_false()
 
-    def substitute(self, name, condition):
+    def substitute(self, name, condition, base=None):
+        return self
+
+    def set_base(self, vertex):
         return self
 
     def simplify(self):
@@ -1081,6 +1084,9 @@ class Condition:
         return ()
 
     def find_necessary_vertices(self):
+        return ()
+
+    def find_sufficient_vertices(self):
         return ()
 
 class _TrueConditionType(Condition):
@@ -1143,8 +1149,14 @@ class AtLeastCondition(Condition):
     def __map_branching_objects__(self, f):
         return AtLeastCondition(self.count, map_branching_objects(self.conditions, f))
 
-    def substitute(self, name, condition):
-        new_conditions = tuple(x.substitute(name, condition) for x in self.conditions)
+    def substitute(self, name, condition, base=None):
+        new_conditions = tuple(x.substitute(name, condition, base) for x in self.conditions)
+        if new_conditions == self.conditions:
+            return self
+        return AtLeastCondition(self.count, new_conditions)
+
+    def set_base(self, vertex):
+        new_conditions = tuple(x.set_base(vertex) for x in self.conditions)
         if new_conditions == self.conditions:
             return self
         return AtLeastCondition(self.count, new_conditions)
@@ -1196,6 +1208,13 @@ class AtLeastCondition(Condition):
                 vertex_counts[vertex] = vertex_counts.get(vertex, 0) + 1
         return [k for (k, v) in vertex_counts.items() if v >= required_count]
 
+    def find_sufficient_vertices(self):
+        vertex_counts = {}
+        for condition in self.conditions:
+            for vertex in condition.find_sufficient_vertices():
+                vertex_counts[vertex] = vertex_counts.get(vertex, 0) + 1
+        return [k for (k, v) in vertex_counts.items() if v >= self.count]
+
 def _flatten_and_append_conditions(conditions, l):
     if isinstance(conditions, Condition):
         l.append(conditions)
@@ -1232,19 +1251,31 @@ def All(*conditions):
 And = All
 
 class PlaceholderCondition(Condition):
-    __slots__ = ['name']
+    __slots__ = ['name', 'base']
 
-    def __init__(self, name):
+    def __init__(self, name, base=None):
         self.name = name
+        self.base = base
         Condition.__init__(self)
 
-    def substitute(self, name, condition):
-        if name == self.name:
+    def substitute(self, name, condition, base=None):
+        if name == self.name and self.base in (None, base):
             return condition
         return self
 
+    def set_base(self, base):
+        if self.base is None and base is not None:
+            return PlaceholderCondition(self.name, base)
+        return self
+
+    def __map_branching_objects__(self, f):
+        return PlaceholderCondition(self.name, f(self.base))
+
     def __repr__(self):
-        return 'PlaceholderCondition(%s)' % repr(self.name)
+        if self.base is not None:
+            return 'PlaceholderCondition(%s, base=%s)' % (repr(self.name), repr(self.base))
+        else:
+            return 'PlaceholderCondition(%s)' % repr(self.name)
 
 class VertexCondition(Condition):
     __slots__ = ['vertex']
@@ -1269,8 +1300,8 @@ class VertexCondition(Condition):
             return VertexCondition(self.vertex.equivalent_to).simplify()
         return self
 
-    def substitute(self, name, condition):
-        if name == self.vertex:
+    def substitute(self, name, condition, base=None):
+        if name == self.vertex and base == None:
             return condition
         return self
 
@@ -1284,6 +1315,10 @@ class VertexCondition(Condition):
         return {self.vertex,}
 
     def find_necessary_vertices(self):
+        result = {self.vertex,}
+        return result
+
+    def find_sufficient_vertices(self):
         result = {self.vertex,}
         return result
 
@@ -1341,15 +1376,35 @@ TODO: get_referenced_vertices, update_referenced_vertices
 deduction functions?
 """
     _condition = PlaceholderCondition("exact")
-    #_necessary_condition = AtLeastCondition(2, (condition, PlaceholderCondition("necessary")))
-    #_sufficient_condition = AtLeastCondition(1, (condition, PlaceholderCondition("sufficient")))
     _necessary_condition = PlaceholderCondition("necessary")
     _sufficient_condition = PlaceholderCondition("sufficient")
     _condition_fixed = False
 
     def __ctor__(self, *args, **kwargs):
         self._necessary_vertices = {}
+        self._sufficient_vertices = {}
+        self._condition = PlaceholderCondition("exact", base=self)
+        self._necessary_condition = PlaceholderCondition("necessary", base=self)
+        self._sufficient_condition = PlaceholderCondition("sufficient", base=self)
         GameObjectType.__ctor__(self, *args, **kwargs)
+
+    def substitute(self, name, condition):
+        condition = condition.set_base(self)
+        base = self
+        while base.equivalent_to != None:
+            base = base.equivalent_to
+        necessary = base._necessary_condition.substitute(name, condition, base=self)
+        exact = base._condition.substitute(name, condition, base=self)
+        sufficient = base._sufficient_condition.substitute(name, condition, base=self)
+
+        if necessary is not base._necessary_condition or exact is not base._condition or sufficient is not base._sufficient_condition:
+            base._necessary_condition = necessary
+            base._condition = exact
+            base._sufficient_condition = sufficient
+            base.updated()
+            return True
+
+        return False
 
     def _get_condition_fixed(self):
         return self._condition_fixed
@@ -1357,31 +1412,30 @@ deduction functions?
     condition_fixed = property(_get_condition_fixed)
 
     def _get_condition(self):
+        if self.equivalent_to:
+            return self.equivalent_to.condition
         return self._condition
 
     def _set_condition(self, condition):
-        if self._condition_fixed and self._condition is not VertexType._condition:
+        if not self._condition_fixed:
+            self._condition = condition.set_base(self)
+            self.updated()
+            return
+        if not (type(self._condition) is PlaceholderCondition and self._condition.name == "exact" and self._condition.base is self):
             raise Exception("condition cannot be reassigned after fast_deduce was first called")
-        self._condition = condition
-        self.updated()
+        self.substitute("exact", condition)
 
     condition = property(_get_condition, _set_condition)
 
     def _get_necessary(self):
         return self._necessary_condition
 
-    def _set_necessary(self, condition):
-        self._necessary_condition = condition
-
-    necessary_condition = property(_get_necessary, _set_necessary)
+    necessary_condition = property(_get_necessary)
 
     def _get_sufficient(self):
         return self._sufficient_condition
 
-    def _set_sufficient(self, condition):
-        self._sufficient_condition = condition
-
-    sufficient_condition = property(_get_sufficient, _set_sufficient)
+    sufficient_condition = property(_get_sufficient)
 
     is_known = False
     known_access = None
@@ -1426,7 +1480,7 @@ deduction functions?
         if simplified_condition is not self._condition:
             self._condition = simplified_condition
             result = True
-        if isinstance(self._condition, VertexCondition) and self.equivalent_to is None:
+        if isinstance(self._condition, VertexCondition):
             self._set_equivalent_to(self._condition.vertex)
             return True
         necessary_condition = self._necessary_condition.simplify()
@@ -1455,8 +1509,104 @@ deduction functions?
             if self.equivalent_to.equivalent_to is not None:
                 self._set_equivalent_to(self.equivalent_to)
                 return True
-            return True
+            return False
         return self._simplify()
+
+    def _combine_equivalent_vertices(self, vertices):
+        condition_vertices = set()
+
+        for vertex in vertices:
+            while vertex.equivalent_to is not None:
+                vertex = vertex.equivalent_to
+            condition_vertices.add(vertex)
+
+        assert(len(condition_vertices))
+
+        if len(condition_vertices) == 1:
+            # degenerate case - a vertex is sufficient for itself, it can be removed from its own condition
+            vertex = vertices[0]
+            vertex._necessary_condition = vertex.necessary_condition.substitute(vertex, FalseCondition).simplify()
+            vertex._condition = vertex.condition.substitute(vertex, FalseCondition).simplify()
+            vertex._sufficient_condition = vertex.sufficient_condition.substitute(vertex, FalseCondition).simplify()
+            return
+
+        base_vertex = vertex
+
+        necessary_condition = AtLeast(1, (vertex._necessary_condition.set_base(vertex) for vertex in condition_vertices))
+        condition = AtLeast(1, (vertex._condition.set_base(vertex) for vertex in condition_vertices))
+        sufficient_condition = AtLeast(1, (vertex._sufficient_condition.set_base(vertex) for vertex in condition_vertices))
+        for vertex in condition_vertices:
+            necessary_condition = necessary_condition.substitute(vertex, FalseCondition)
+            condition = condition.substitute(vertex, FalseCondition)
+            sufficient_condition = sufficient_condition.substitute(vertex, FalseCondition)
+        necessary_condition = necessary_condition.simplify()
+        condition = condition.simplify()
+        sufficient_condition = sufficient_condition.simplify()
+
+        base_vertex._necessary_condition = necessary_condition
+        base_vertex._condition = condition
+        base_vertex._sufficient_condition = sufficient_condition
+
+        for vertex in vertices:
+            if vertex == base_vertex:
+                continue
+            vertex._set_equivalent_to(base_vertex)
+
+    def _check_for_sufficiency_loops(self):
+        found = False
+        for sufficient in Or(self._condition, self._sufficient_condition).find_sufficient_vertices():
+            if sufficient not in self._sufficient_vertices:
+                self._sufficient_vertices[sufficient] = None
+                found = True
+        if not found:
+            # no new sufficient vertices for this object
+            return False
+
+        visited = {self}
+        vertex_stack = [self]
+        sufficient_vertices_stack = [list(self._sufficient_vertices)]
+
+        while vertex_stack:
+            current_vertex = vertex_stack[-1]
+            sufficient_vertices = sufficient_vertices_stack[-1]
+
+            if not sufficient_vertices:
+                vertex_stack.pop()
+                sufficient_vertices_stack.pop()
+                continue
+
+            sufficient_vertex = sufficient_vertices.pop()
+            if sufficient_vertex in visited:
+                if sufficient_vertex in vertex_stack:
+                    # sufficiency loop
+                    equivalent_vertices = vertex_stack[vertex_stack.index(sufficient_vertex):]
+                    self._combine_equivalent_vertices(equivalent_vertices)
+                    return True
+                continue
+            else:
+                sufficient_vertex._maybe_simplify()
+
+                if sufficient_vertex.is_known:
+                    if sufficient_vertex.known_access:
+                        for item in vertex_stack:
+                            item._set_known_access(True)
+                        break
+                    else:
+                        del current_vertex._sufficient_vertices[sufficient_vertex]
+                        continue
+
+                # check for new sufficient vertices for sufficient_vertex
+                for sufficient in Or(sufficient_vertex._condition, sufficient_vertex._sufficient_condition).find_sufficient_vertices():
+                    if sufficient not in sufficient_vertex._sufficient_vertices:
+                        sufficient_vertex._sufficient_vertices[sufficient] = None
+
+                # add to stack
+                visited.add(sufficient_vertex)
+                vertex_stack.append(sufficient_vertex)
+                sufficient_vertices_stack.append(list(sufficient_vertex._sufficient_vertices))
+        else:
+            return False # no new information other than sufficient vertices
+        return True # changed
 
     def _check_for_necessity_loops(self):
         found = False
@@ -1521,9 +1671,10 @@ deduction functions?
         self._condition_fixed = True
         changed = self._maybe_simplify()
 
-        if self.equivalent_to is None and not self.is_known:
-            if self._check_for_necessity_loops():
-                changed = True
+        while self.equivalent_to is None and not self.is_known and \
+            (self._check_for_necessity_loops() or self._check_for_sufficiency_loops()):
+            changed = True
+            self._maybe_simplify()
         if changed:
             self.updated()
         GameObjectType.fast_deduce(self)
@@ -1538,7 +1689,6 @@ deduction functions?
             result.update(self._condition.collect_dependencies())
             result.update(self._sufficient_condition.collect_dependencies())
             result.update(self._necessary_condition.collect_dependencies())
-            result.update(self._necessary_vertices.keys())
         return result
 
     def debug_print(self, indent=0):
@@ -1563,7 +1713,7 @@ Goal = GoalType()
 
 class RequiredGoalsVertex(VertexType):
     def fast_deduce(self):
-        if self.condition == VertexType.condition:
+        if not self.condition_fixed:
             conditions = []
             for goal in self.get_world().descendents_by_type(GoalType):
                 conditions.append(Or(goal.Configuration.IsNot("Required"), goal))
@@ -1572,7 +1722,7 @@ class RequiredGoalsVertex(VertexType):
 
 class OptionalGoalsVertex(VertexType):
     def fast_deduce(self):
-        if self.condition == VertexType.condition:
+        if not self.condition_fixed:
             conditions = []
             for goal in self.get_world().descendents_by_type(GoalType):
                 conditions.append(Or(goal.Configuration.Is("Ignore"), goal))
