@@ -1904,7 +1904,7 @@ This will set the total number of connections to 1 (or another count if specifie
         if not self.known and sum(self.chosen_connections.values()) == self.maximum_connections:
             self.commit()
         elif not self.can_commit() and len(self.get_candidates()) == 0:
-            raise LogicError("%r cannot connect to any other open ports")
+            raise LogicError("%r cannot connect to any other open ports" % self)
 
     def debug_print(self, indent=0):
         GameObjectType.debug_print(self, indent)
@@ -1962,7 +1962,6 @@ class MovementPortType(PortType):
 Todo:
 can_enter = Vertex indicating whether it's possible to enter self.parent through a connected port. Condition may be set by user, defaults to TrueCondition.
 can_exit = Vertex indicating whether it's possible to exit self.parent through a connected port. Condition may be set by user, defaults to TrueCondition.
-can_reach_entrance = Vertex indicating whether this position could be reached through a connected position, if can_enter is true. Conditions are set by this object.
 enter_transitions = List of state transitions and constraints triggered when entering through this port.
 exit_transitions = List of state transitions and constraints triggered when exiting through this port.
 can_start = Game can start here.
@@ -1973,18 +1972,34 @@ can_start = Game can start here.
 
     def __ctor__(self, *args, **kwargs):
         PortType.__ctor__(self, *args, **kwargs)
-        self.can_reach_entrance = VertexType()
         self.can_enter = VertexType(condition=TrueCondition)
         self.can_exit = VertexType(condition=TrueCondition)
-
-    def on_set(self, value):
-        PortType.on_set(self, value)
-        self.can_reach_entrance.condition = Any(
-            And(x.can_exit, x.parent.access_any_state) for x in value.keys())
 
 MovementPortType.compatible_types = (MovementPortType,)
 
 MovementPort = MovementPortType()
+
+class MovementPortReachableCondition(Condition):
+    """Helper for use in vertices created by MovementPort and Position objects, probably shouldn't be used directly.
+MovementPortReachableCondition(port) is true if the entrance of the port can be reached. This does not account for the value of can_enter."""
+    def __init__(self, port):
+        Condition.__init__(self)
+        self.port = port
+
+    def __repr__(self):
+        return 'MovementPortReachableCondition(%s)' % repr(self.port)
+
+    def __map_branching_objects__(self, f):
+        return MovementPortReachableCondition(f(self.port))
+
+    def simplify(self):
+        if self.port.known:
+            return Any(
+                And(x.can_exit, x.parent.access_any_state) for x in self.port.value.keys()).simplify()
+        return self
+
+    def collect_dependencies(self):
+        return (self.port,)
 
 class PositionVertexType(VertexType):
     pass
@@ -2009,8 +2024,9 @@ access_any_state = A vertex indicating that the player can access this position 
             ports = []
             for x in self.children.values():
                 if isinstance(x, MovementPortType):
-                    ports.append(And(x.can_enter, x.can_reach_entrance))
+                    ports.append(And(x.can_enter, MovementPortReachableCondition(x)))
             self._access_any_state.condition = Any(ports)
+            self._access_any_state.mark_fast_deduction()
         return self._access_any_state
 
     access_any_state = property(get_access_any_state)
@@ -2049,19 +2065,6 @@ class GridMapType(GameObjectType):
             North=MovementPortType(), South=MovementPortType(),
             East=MovementPortType(), West=MovementPortType())
 
-    def connect_cells_horizontal(self, west, east):
-        west.East.disconnect_all()
-        east.West.disconnect_all()
-        west.East.connect(east.West)
-
-    def connect_cells_vertical(self, north, south):
-        north.South.disconnect_all()
-        south.North.disconnect_all()
-        north.South.connect(south.North)
-
-    def connect_cell_edge(self, cell, name):
-        cell.getattr(name).disconnect_all()
-
     def on_choice(self, choice):
         if (choice in (self.Width, self.Height) and
             self.Width.known and self.Height.known):
@@ -2074,26 +2077,25 @@ class GridMapType(GameObjectType):
                     if x < width and y < height:
                         if not self.hasattr((x, y)):
                             self.setattr((x, y), self.new_cell(x, y))
-                            if x > 0:
-                                self.connect_cells_horizontal(self.getattr((x-1, y)), self.getattr((x, y)))
-                            else:
-                                self.connect_cell_edge(self.getattr((x, y)), "West")
-                            if x == width-1:
-                                self.connect_cell_edge(self.getattr((x, y)), "East")
-                            if y > 0:
-                                self.connect_cells_vertical(self.getattr((x, y-1)), self.getattr((x, y)))
-                            else:
-                                self.connect_cell_edge(self.getattr((x, y)), "North")
-                            if y == height-1:
-                                self.connect_cell_edge(self.getattr((x, y)), "South")
                     else:
                         self.delattr((x, y))
-                        if x == width and y < height:
-                            self.connect_cell_edge(self.getattr((x-1, y)), "East")
-                        if y == height and x < width:
-                            self.connect_cell_edge(self.getattr((x, y-1)), "South")
                     y += 1
                 x += 1
+
+    def fast_deduce(self):
+        # commit the north/south connection choices
+        width = self.Width.value
+        height = self.Height.value
+        for x in range(self.Width.value - 1):
+            for y in range(self.Height.value - 1):
+                obj = self.getattr((x, y))
+                obj.West.connect(self.getattr((x+1, y)).East)
+                obj.West.commit()
+                self.getattr((x+1, y)).East.commit()
+                obj.South.connect(self.getattr((x, y+1)).North)
+                obj.South.commit()
+                self.getattr((x, y+1)).North.commit()
+        GameObjectType.fast_deduce(self)
 
     # TODO: links
 
@@ -2282,5 +2284,6 @@ if __name__ == '__main__':
     w = world.generate('test seed')
     w.debug_print()
 
-    w.object_from_path(('MazeGame', 'map', '(1, 1)'), relative=True).access_any_state.debug_print()
+    w.object_from_path(('MazeGame', 'map', '(1, 1)'), relative=True).access_any_state
+    w.object_from_path(('MazeGame', 'map', '(1, 1)'), relative=True).debug_print()
     print(w.object_from_path(('MazeGame', 'map', '(1, 1)'), relative=True).access_any_state.condition.simplify())
